@@ -14,7 +14,7 @@ import altair as alt
 # =========================
 # App config + Branding
 # =========================
-APP_NAME = "Asterisk Defector Hacker"
+APP_NAME = "Astra Defect Tracker"
 st.set_page_config(page_title=APP_NAME, page_icon="🎫", layout="wide")
 
 st.title(f"🎫 {APP_NAME}")
