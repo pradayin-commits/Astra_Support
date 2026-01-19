@@ -569,4 +569,217 @@ with tab_defects:
         # Recompute Age for display
         tmp = filtered.copy()
         tmp["Open Date"] = tmp["Open Date"].apply(parse_any_date)
-        tmp["R]()
+        tmp["Resolved Date"] = tmp["Resolved Date"].apply(parse_any_date)
+        tmp["Age (days)"] = tmp.apply(lambda r: compute_age_days(r["Open Date"], r["Resolved Date"], str(r["Status"])), axis=1)
+
+        # Make “premium” column configs
+        column_config = {
+            "Company Code": st.column_config.SelectboxColumn("Company Code", options=COMPANY_CODES, required=True),
+            "Open Date": st.column_config.DateColumn("Open Date"),
+            "Module": st.column_config.SelectboxColumn("Module", options=MODULES, required=True),
+            "Defect Type": st.column_config.SelectboxColumn("Defect Type", options=DEFECT_TYPES),
+            "Priority": st.column_config.SelectboxColumn("Priority", options=PRIORITIES, required=True),
+            "Status": st.column_config.SelectboxColumn("Status", options=STATUSES, required=True),
+            "Current Owner": st.column_config.TextColumn("Current Owner", help="Who is working now"),
+            "Resolved Date": st.column_config.DateColumn("Resolved Date"),
+            "Open with": st.column_config.SelectboxColumn("Open with", options=OPEN_WITH),
+            "Environment": st.column_config.SelectboxColumn("Environment", options=ENVIRONMENTS),
+            "Age (days)": st.column_config.NumberColumn("Age (days)", help="Auto-calculated"),
+            "Description": st.column_config.TextColumn("Description", width="large"),
+            "Description / Steps": st.column_config.TextColumn("Description / Steps", width="large"),
+        }
+
+        st.info(
+            "Edit cells directly. Then click **Save changes**. "
+            "Age (days) is auto-calculated. Created/Updated captures the username.",
+            icon="✍️",
+        )
+
+        edited_df = st.data_editor(
+            tmp,
+            use_container_width=True,
+            hide_index=True,
+            column_config=column_config,
+            disabled=["Defect ID", "Age (days)", "Created By", "Created At", "Last Updated By", "Last Updated At"],
+            num_rows="dynamic",
+            height=520,
+            key="defects_editor",
+        )
+
+        c1, c2, c3 = st.columns([1, 1, 2])
+
+        with c1:
+            if st.button("💾 Save changes", type="primary"):
+                if not username:
+                    st.error("Username is required (sidebar) to save changes.")
+                else:
+                    try:
+                        df_to_save = edited_df.copy()
+                        df_to_save["Open Date"] = df_to_save["Open Date"].apply(parse_any_date)
+                        df_to_save["Resolved Date"] = df_to_save["Resolved Date"].apply(parse_any_date)
+
+                        # Validate Resolved/Closed requires Resolved Date
+                        bad = df_to_save[(df_to_save["Status"].isin(["Resolved", "Closed"])) & (df_to_save["Resolved Date"].isna())]
+                        if len(bad) > 0:
+                            st.error("Some rows are Resolved/Closed but missing Resolved Date. Please fill Resolved Date.")
+                        else:
+                            for _, r in df_to_save.iterrows():
+                                row = r.to_dict()
+
+                                # If owner empty but status active -> set owner to editor username
+                                if (str(row.get("Status", "")) in {"New", "In Progress", "Blocked", "Reopened"}) and not str(row.get("Current Owner", "")).strip():
+                                    row["Current Owner"] = username
+
+                                upsert_defect(row, actor=username, is_create=False)
+
+                            st.success(f"Saved changes • Updated by: **{username}**")
+                            st.session_state.df = load_defects_df()
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
+
+        with c2:
+            with st.popover("🗑️ Delete"):
+                st.write("Delete by Defect ID (careful).")
+                del_id = st.text_input("Defect ID", placeholder="e.g., SD-1-001")
+                if st.button("Confirm delete"):
+                    if not username:
+                        st.error("Username is required (sidebar) to delete.")
+                    elif del_id.strip():
+                        delete_defect(del_id.strip())
+                        st.success(f"Deleted **{del_id.strip()}**")
+                        st.session_state.df = load_defects_df()
+                        st.rerun()
+                    else:
+                        st.warning("Enter a Defect ID.")
+
+        with c3:
+            st.caption("Tip: Use sidebar filters for a clean, professional workflow (no multi-select chips).")
+
+
+# =========================
+# DASHBOARD TAB
+# =========================
+with tab_dashboard:
+    st.markdown("#### Dashboard")
+
+    df_stats = load_defects_df()
+    if df_stats.empty:
+        st.info("No data yet. Create defects to see trends.", icon="📊")
+    else:
+        # KPIs
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("New", int((df_stats["Status"] == "New").sum()))
+        col2.metric("In Progress", int((df_stats["Status"] == "In Progress").sum()))
+        col3.metric("Blocked", int((df_stats["Status"] == "Blocked").sum()))
+        col4.metric("Closed", int((df_stats["Status"] == "Closed").sum()))
+        col5.metric("P1 not closed", int(((df_stats["Priority"] == "P1 - Critical") & (df_stats["Status"] != "Closed")).sum()))
+
+        st.write("")
+
+        # Clean dataset for charts
+        chart_df = df_stats.copy()
+        chart_df["Open Date"] = chart_df["Open Date"].apply(parse_any_date)
+        chart_df["Resolved Date"] = chart_df["Resolved Date"].apply(parse_any_date)
+        chart_df["Age (days)"] = chart_df.apply(lambda r: compute_age_days(r["Open Date"], r["Resolved Date"], str(r["Status"])), axis=1)
+
+        left, right = st.columns(2)
+
+        with left:
+            st.markdown("##### Open items by Module")
+            open_df = chart_df[chart_df["Status"] != "Closed"].copy()
+            if open_df.empty:
+                st.info("No open items.")
+            else:
+                ch = (
+                    alt.Chart(open_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Module:N", sort="-y"),
+                        y=alt.Y("count():Q"),
+                        color=alt.Color("Status:N"),
+                        tooltip=["Module:N", "Status:N", "count():Q"],
+                    )
+                )
+                st.altair_chart(ch, use_container_width=True, theme="streamlit")
+
+        with right:
+            st.markdown("##### Open items by Priority")
+            open_df = chart_df[chart_df["Status"] != "Closed"].copy()
+            if open_df.empty:
+                st.info("No open items.")
+            else:
+                ch = (
+                    alt.Chart(open_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Priority:N", sort=PRIORITIES),
+                        y=alt.Y("count():Q"),
+                        tooltip=["Priority:N", "count():Q"],
+                    )
+                )
+                st.altair_chart(ch, use_container_width=True, theme="streamlit")
+
+        st.write("")
+        st.markdown("##### Aging (not closed)")
+        open_df = chart_df[chart_df["Status"] != "Closed"].copy()
+        if open_df.empty:
+            st.info("No open items.")
+        else:
+            def bucket(age):
+                if age is None:
+                    return "Unknown"
+                if age <= 2:
+                    return "0–2"
+                if age <= 7:
+                    return "3–7"
+                if age <= 14:
+                    return "8–14"
+                return "15+"
+
+            open_df["Aging Bucket"] = open_df["Age (days)"].apply(bucket)
+
+            ch = (
+                alt.Chart(open_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Aging Bucket:N", sort=["0–2", "3–7", "8–14", "15+", "Unknown"]),
+                    y=alt.Y("count():Q"),
+                    color=alt.Color("Priority:N"),
+                    tooltip=["Aging Bucket:N", "Priority:N", "count():Q"],
+                )
+            )
+            st.altair_chart(ch, use_container_width=True, theme="streamlit")
+
+
+# =========================
+# EXPORT TAB
+# =========================
+with tab_export:
+    st.markdown("#### Export")
+
+    export_df = load_defects_df().copy()
+    if export_df.empty:
+        st.info("Nothing to export yet.", icon="⬇️")
+    else:
+        # Export-friendly dates
+        export_df["Open Date"] = export_df["Open Date"].apply(lambda d: d.isoformat() if isinstance(d, dt.date) else "")
+        export_df["Resolved Date"] = export_df["Resolved Date"].apply(lambda d: d.isoformat() if isinstance(d, dt.date) else "")
+        csv_bytes = export_df.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            "Download CSV",
+            data=csv_bytes,
+            file_name="defects_export.csv",
+            mime="text/csv",
+            type="primary",
+        )
+        st.caption("CSV keeps your Excel structure clean. If you want an Excel (.xlsx) export, tell me and I’ll add it.")
+
+
+# =========================
+# requirements.txt (minimum)
+# streamlit
+# pandas
+# altair
+# =========================
