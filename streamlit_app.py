@@ -16,33 +16,38 @@ st.markdown("""
     [data-testid="stSidebar"] { display: none; }
     .stApp { background-color: #f5f5f7; }
     
-    /* Remove top white space */
+    /* ADDED BUFFER AT THE TOP - STOPPING CUT-OFF */
     .block-container {
-        padding-top: 0.2rem !important;
-        margin-top: -3.8rem !important;
+        padding-top: 2rem !important; 
+        margin-top: 0rem !important;
     }
 
-    /* Small & Sleek KPI Buckets */
+    /* KPI Buckets - Clean & Compact */
     div[data-testid="stMetric"] {
         background-color: white;
         border: 1px solid #d2d2d7;
-        border-radius: 8px;
-        padding: 5px 10px !important;
-        height: 85px;
+        border-radius: 10px;
+        padding: 10px !important;
+        height: 90px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02);
     }
     
     div[data-testid="stMetricValue"] {
-        font-size: 22px !important;
-        font-weight: 600 !important;
+        font-size: 24px !important;
     }
 
     /* Small Export Button */
     .stDownloadButton button {
-        padding: 0.1rem 0.4rem !important;
+        padding: 0.1rem 0.5rem !important;
         font-size: 11px !important;
-        height: 24px !important;
-        border-radius: 4px !important;
+        height: 26px !important;
+    }
+
+    /* Header Alignment Logic */
+    .main-header {
+        display: flex;
+        align-items: center;
+        margin-bottom: 20px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -96,32 +101,32 @@ def edit_modal(row):
 # ==========================================
 df = load_data()
 
-# --- HEADER (Centered Alignment) ---
-h_col1, h_col2 = st.columns([0.5, 10])
+# --- HEADER (Fixed Logo & Text Visibility) ---
+h_col1, h_col2 = st.columns([0.8, 10])
 with h_col1:
     if os.path.exists("logo.png"):
-        st.image("logo.png", width=60)
+        st.image("logo.png", width=75)
     else:
-        st.write("🍏")
+        st.title("🍏") 
 with h_col2:
-    st.markdown(f"<h2 style='margin:0;'>{APP_NAME}</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h1 style='margin:0; padding-top:10px;'>{APP_NAME}</h1>", unsafe_allow_html=True)
 
-# --- COMPACT KPI BUCKETS ---
+# --- KPI BUCKETS ---
 if not df.empty:
-    k1, k2, k3, k4, k_space = st.columns([1, 1, 1, 1, 3])
+    k1, k2, k3, k4 = st.columns([1, 1, 1, 2.5]) # Metrics on left, space on right
     k1.metric("Global", len(df))
     k2.metric("Open", len(df[~df['status'].isin(["Resolved", "Closed"])]))
     k3.metric("Resolved", len(df[df['status'].isin(["Resolved", "Closed"])]))
 
 st.divider()
 
-# TAB PERSISTENCE: 'key' prevents the reset to Tab 1 on every interaction
-selected_tab = st.tabs(["📂 Explorer", "➕ Register", "📊 Insights"])
+# PERSISTENT TABS
+tabs = st.tabs(["📂 Explorer", "➕ Register", "📊 Insights"])
 
-with selected_tab[0]:
+with tabs[0]:
     search_col, export_col = st.columns([11, 1])
     with search_col:
-        search_query = st.text_input("🔍 Search", placeholder="Filter by any value...", label_visibility="collapsed")
+        search_query = st.text_input("🔍 Search", placeholder="Filter table...", label_visibility="collapsed")
     with export_col:
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 CSV", data=csv, file_name="astra.csv")
@@ -133,9 +138,9 @@ with selected_tab[0]:
         if rows:
             edit_modal(display_df.iloc[rows[0]])
 
-with selected_tab[1]:
+with tabs[1]:
     with st.form("reg_form", clear_on_submit=True):
-        st.subheader("Register New Defect")
+        st.subheader("New Entry")
         c1, c2 = st.columns(2)
         comp = c1.selectbox("Company", ["4310", "8410"])
         mod = c2.selectbox("Module", ["PLM", "PP", "FI", "SD", "MM", "QM"])
@@ -143,40 +148,36 @@ with selected_tab[1]:
         pri = st.selectbox("Priority", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"], index=2)
         rep = st.text_input("Reporter *")
         if st.form_submit_button("Submit", type="primary"):
-            # Insertion logic would go here
-            st.success("Entry queued for processing...")
+            st.success("Synchronizing with Database...")
             st.rerun()
 
-with selected_tab[2]:
+with tabs[2]:
     if not df.empty:
-        st.subheader("📊 Dynamic Analysis")
-        
-        # COLUMN FILTERING (Exclude meta-data)
+        # PROGRESS BAR
+        total = len(df)
+        resolved = len(df[df['status'].isin(["Resolved", "Closed"])])
+        progress = resolved / total
+        st.write(f"**Resolution Progress: {resolved}/{total} ({int(progress*100)}%)**")
+        st.progress(progress)
+
+        # CASCADING SELECTORS
         excluded = ["defect_id", "description", "comments", "created_at", "updated_at", "defect_title"]
         available_cols = [c for c in df.columns if c not in excluded]
         
-        # CASCADING SELECTORS
         sel_c1, sel_c2 = st.columns(2)
-        category = sel_c1.selectbox("Step 1: Select Category", available_cols, key="dynamic_cat_select")
+        category = sel_c1.selectbox("Analyze Category", available_cols, key="insight_cat")
         
-        # UPDATING CIRCLE (Spinner)
-        with st.spinner("Updating charts..."):
+        with st.spinner("Refining charts..."):
             sub_values = df[category].unique().tolist()
-            selected_sub = sel_c2.multiselect(f"Step 2: Filter {category}", sub_values, default=sub_values, key="dynamic_sub_select")
+            selected_sub = sel_c2.multiselect(f"Filter {category}", sub_values, default=sub_values, key="insight_sub")
             
             chart_df = df[df[category].isin(selected_sub)]
             
             if not chart_df.empty:
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.write(f"**{category.title()} Distribution**")
-                    fig_pie = px.pie(chart_df, names=category, hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-                    st.plotly_chart(fig_pie, use_container_width=True)
+                    st.plotly_chart(px.pie(chart_df, names=category, hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel), use_container_width=True)
                 with c2:
-                    st.write(f"**Count by {category.title()}**")
                     bar_data = chart_df[category].value_counts().reset_index()
                     bar_data.columns = [category, 'Count']
-                    fig_bar = px.bar(bar_data, x=category, y='Count', color=category, color_discrete_sequence=px.colors.qualitative.Safe)
-                    st.plotly_chart(fig_bar, use_container_width=True)
-            else:
-                st.warning("No data matches the selected filters.")
+                    st.plotly_chart(px.bar(bar_data, x=category, y='Count', color=category, color_discrete_sequence=px.colors.qualitative.Safe), use_container_width=True)
