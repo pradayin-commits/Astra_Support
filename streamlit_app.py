@@ -16,27 +16,25 @@ st.markdown("""
     [data-testid="stSidebar"] { display: none; }
     .stApp { background-color: #f5f5f7; }
     
-    /* Pull app to the very top */
+    /* Remove top white space and pull app up */
     .block-container {
         padding-top: 0.5rem !important;
-        margin-top: -3rem !important;
+        margin-top: -3.5rem !important;
     }
 
-    /* KPI Card Styling */
+    /* KPI Buckets Styling */
     div[data-testid="stMetric"] {
         background-color: white;
         border: 1px solid #d2d2d7;
         border-radius: 12px;
         padding: 15px !important;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.01);
     }
-    
-    /* Tiny Export Button Styling */
+
+    /* Small Export Button */
     .stDownloadButton button {
-        padding: 0.2rem 0.5rem !important;
+        padding: 0.1rem 0.5rem !important;
         font-size: 12px !important;
-        height: auto !important;
-        min-height: 0px !important;
+        height: 28px !important;
         border-radius: 8px !important;
     }
     </style>
@@ -76,7 +74,7 @@ def generate_id(module, code):
         return f"{module.upper()}-{code}-{dt.datetime.now().strftime('%S%f')[:3]}"
 
 # ==========================================
-# 3. INTERACTIVE MODALS
+# 3. EDIT MODAL
 # ==========================================
 @st.dialog("✏️ Edit Defect")
 def edit_modal(row):
@@ -96,7 +94,6 @@ def edit_modal(row):
                     UPDATE public.defects SET defect_title=:t, status=:s, priority=:p, responsible=:r, updated_at=NOW() 
                     WHERE defect_id=:id
                 """), {"t": new_title, "s": new_status, "p": new_pri, "r": new_resp, "id": row["defect_id"]})
-            load_data.clear()
             st.rerun()
 
 # ==========================================
@@ -104,21 +101,19 @@ def edit_modal(row):
 # ==========================================
 df = load_data()
 
-# --- HEADER WITH LOGO ---
-header_col1, header_col2 = st.columns([1, 10])
-with header_col1:
-    # Try multiple common logo names just in case
-    logo_file = "logo.png" if os.path.exists("logo.png") else None
-    if logo_file:
-        st.image(logo_file, width=80)
+# --- HEADER (Logo + Text) ---
+h_col1, h_col2 = st.columns([0.8, 10])
+with h_col1:
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=80)
     else:
-        st.write("🍏") # Fallback icon if logo file is missing from root
-with header_col2:
+        st.write("🍏")
+with h_col2:
     st.title(APP_NAME)
 
 # --- KPI BUCKETS ---
 if not df.empty:
-    k1, k2, k3, k4 = st.columns([1, 1, 1, 1])
+    k1, k2, k3, k_space = st.columns([1, 1, 1, 1])
     k1.metric("Global Defects", len(df))
     k2.metric("Open Defects", len(df[~df['status'].isin(["Resolved", "Closed"])]))
     k3.metric("Resolved", len(df[df['status'].isin(["Resolved", "Closed"])]))
@@ -128,23 +123,18 @@ st.divider()
 tab_explore, tab_register, tab_insights = st.tabs(["📂 Explorer", "➕ Register", "📊 Insights"])
 
 with tab_explore:
-    # Search Box & Tiny Export Row
-    search_col, export_col = st.columns([9, 1])
+    search_col, export_col = st.columns([10, 1])
     with search_col:
-        search_query = st.text_input("🔍 Search Defects...", placeholder="Type to filter by ID, Title, or Reporter...")
+        search_query = st.text_input("🔍 Search Defects...", placeholder="Search IDs, titles, or modules...")
     with export_col:
-        st.write("") # Spacer
+        st.write(" ") # Padding
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 CSV", data=csv, file_name="astra.csv")
 
-    # Filter data based on search
     if not df.empty:
-        if search_query:
-            display_df = df[df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-        else:
-            display_df = df
-
-        st.caption("Excel-style: Click headers to sort. Select a row to edit.")
+        # Search Filtering
+        display_df = df[df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)] if search_query else df
+        
         selection = st.dataframe(display_df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
         
         rows = selection.get("selection", {}).get("rows", [])
@@ -153,14 +143,14 @@ with tab_explore:
 
 with tab_register:
     with st.form("reg_form", clear_on_submit=True):
-        st.subheader("New Defect Entry")
+        st.subheader("Register New Defect")
         c1, c2 = st.columns(2)
         comp = c1.selectbox("Company", ["4310", "8410"])
         mod = c2.selectbox("Module", ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP"])
         title = st.text_input("Summary *")
         pri = st.selectbox("Priority", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"], index=2)
         rep = st.text_input("Reporter *")
-        if st.form_submit_button("Commit to Database", type="primary"):
+        if st.form_submit_button("Submit", type="primary"):
             if title and rep:
                 new_id = generate_id(mod, comp)
                 with get_engine().begin() as conn:
@@ -168,28 +158,39 @@ with tab_register:
                         INSERT INTO public.defects (defect_id, company_code, module, defect_title, priority, status, reported_by, open_date)
                         VALUES (:id, :c, :m, :t, :p, 'New', :r, :d)
                     """), {"id": new_id, "c": comp, "m": mod, "t": title, "p": pri, "r": rep, "d": dt.date.today()})
-                load_data.clear()
                 st.rerun()
 
 with tab_insights:
     if not df.empty:
-        st.subheader("📊 Comparative Analysis")
-        all_cols = df.columns.tolist()
+        st.subheader("📊 Performance Analysis")
         
-        # Two Inputs for comparison
-        col_input1, col_input2 = st.columns(2)
-        choice1 = col_input1.selectbox("Primary View (Pie)", all_cols, index=all_cols.index("priority") if "priority" in all_cols else 0)
-        choice2 = col_input2.selectbox("Secondary View (Bar)", all_cols, index=all_cols.index("status") if "status" in all_cols else 0)
+        # 1. Filter out excluded columns for the FIRST dropdown
+        excluded = ["defect_id", "description", "comments", "created_at", "updated_at", "defect_title"]
+        available_cols = [c for c in df.columns if c not in excluded]
         
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write(f"**{choice1.title()} Distribution**")
-            fig_pie = px.pie(df, names=choice1, hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig_pie, use_container_width=True)
-        with c2:
-            st.write(f"**{choice2.title()} Volume**")
-            # Grouping to ensure bar chart is clean
-            bar_data = df[choice2].value_counts().reset_index()
-            bar_data.columns = [choice2, 'Count']
-            fig_bar = px.bar(bar_data, x=choice2, y='Count', color=choice2, color_discrete_sequence=px.colors.qualitative.Safe)
-            st.plotly_chart(fig_bar, use_container_width=True)
+        # 2. Cascading Selectors
+        sel_c1, sel_c2 = st.columns(2)
+        category = sel_c1.selectbox("Select Category (X-Axis)", available_cols, index=available_cols.index("module") if "module" in available_cols else 0)
+        
+        # 3. Dynamic Second Dropdown (Sub-values)
+        sub_values = df[category].unique().tolist()
+        selected_sub = sel_c2.multiselect(f"Filter specific {category} values", sub_values, default=sub_values)
+        
+        # Filter data based on second dropdown
+        chart_df = df[df[category].isin(selected_sub)]
+        
+        # 4. Charts
+        chart_c1, chart_c2 = st.columns(2)
+        if not chart_df.empty:
+            with chart_c1:
+                st.write(f"**{category.title()} Distribution**")
+                fig_pie = px.pie(chart_df, names=category, hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            with chart_c2:
+                st.write(f"**Count by {category.title()}**")
+                bar_data = chart_df[category].value_counts().reset_index()
+                bar_data.columns = [category, 'Count']
+                fig_bar = px.bar(bar_data, x=category, y='Count', color=category, color_discrete_sequence=px.colors.qualitative.Safe)
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.warning("No data matches the selected filters.")
