@@ -6,46 +6,34 @@ from sqlalchemy import create_engine, text
 import plotly.express as px
 
 # ==========================================
-# 1. DESIGN & BRANDING
+# 1. DESIGN & BRANDING (MATCHING MOCKUP)
 # ==========================================
 APP_NAME = "Astra Defect Tracker"
-st.set_page_config(page_title=APP_NAME, page_icon="🍏", layout="wide")
+st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
 
 st.markdown("""
     <style>
-    [data-testid="stSidebar"] { display: none; }
-    .stApp { background-color: #f5f5f7; }
+    /* Main Background */
+    .stApp { background-color: #f8f9fa; }
     
-    /* Buffer at the top to prevent cut-off */
+    /* Top Buffer Fix */
     .block-container {
-        padding-top: 2.5rem !important; 
-        margin-top: 0rem !important;
+        padding-top: 2rem !important;
     }
 
-    /* KPI Buckets - Clean & Compact */
-    div[data-testid="stMetric"] {
-        background-color: white;
-        border: 1px solid #d2d2d7;
-        border-radius: 10px;
-        padding: 10px !important;
-        height: 90px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    /* KPI Bucket Styling - Matching the Image */
+    .metric-card {
+        border-radius: 12px;
+        padding: 20px;
+        color: white;
+        margin-bottom: 10px;
     }
-    
-    /* Small Export Button */
-    .stDownloadButton button {
-        padding: 0.1rem 0.5rem !important;
-        font-size: 11px !important;
-        height: 26px !important;
-    }
+    .global-bucket { background: linear-gradient(135deg, #1e5799 0%, #2989d8 100%); }
+    .open-bucket { background: linear-gradient(135deg, #e67e22 0%, #d35400 100%); }
+    .resolved-bucket { background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); }
 
-    /* Logo and Title Alignment */
-    .logo-text-container {
-        display: flex;
-        align-items: center;
-        gap: 15px;
-        margin-bottom: 20px;
-    }
+    /* Heading Styling */
+    h1 { color: #2c3e50; font-weight: 700; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -68,106 +56,84 @@ def load_data():
         return pd.DataFrame()
 
 # ==========================================
-# 3. MODALS
-# ==========================================
-@st.dialog("✏️ Edit Defect")
-def edit_modal(row):
-    with st.form("edit_form", border=False):
-        c1, c2 = st.columns(2)
-        new_title = c1.text_input("Title", value=row["defect_title"])
-        status_opts = ["New", "In Progress", "Blocked", "Resolved", "Closed"]
-        new_status = c2.selectbox("Status", status_opts, index=status_opts.index(row["status"]) if row["status"] in status_opts else 0)
-        new_resp = c2.text_input("Responsible", value=row.get("responsible", ""))
-        
-        if st.form_submit_button("Update Astra", type="primary", use_container_width=True):
-            with get_engine().begin() as conn:
-                conn.execute(text("UPDATE public.defects SET defect_title=:t, status=:s, responsible=:r WHERE defect_id=:id"),
-                             {"t": new_title, "s": new_status, "r": new_resp, "id": row["defect_id"]})
-            st.rerun()
-
-# ==========================================
-# 4. MAIN UI
+# 3. MAIN UI EXECUTION
 # ==========================================
 df = load_data()
 
-# --- HEADER (LOGO & TEXT ALIGNED) ---
-# Added padding-top to the logo column to bring it down in line with text
-h_col1, h_col2 = st.columns([0.8, 10])
-with h_col1:
-    st.write("##") # This pushes the logo down to align with the H1 text
-    if os.path.exists("logo.png"):
-        st.image("logo.png", width=70)
+# --- SIDEBAR FILTERS (STOP REFRESH JUMPING) ---
+with st.sidebar:
+    st.title("🛡️ Astra")
+    st.subheader("Dashboard Filters")
+    
+    if not df.empty:
+        sel_module = st.multiselect("Module", df['module'].unique(), default=df['module'].unique())
+        sel_priority = st.multiselect("Priority", df['priority'].unique(), default=df['priority'].unique())
+        
+        # Apply filters immediately to the dataframe
+        filtered_df = df[(df['module'].isin(sel_module)) & (df['priority'].isin(sel_priority))]
     else:
-        st.title("🍏") 
-with h_col2:
-    st.markdown(f"<h1 style='margin:0;'>{APP_NAME}</h1>", unsafe_allow_html=True)
+        filtered_df = df
 
-# --- KPI BUCKETS ---
+    st.divider()
+    csv = filtered_df.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Export CSV", data=csv, file_name="astra_data.csv", use_container_width=True)
+
+# --- HEADER ---
+st.title(APP_NAME)
+
+# --- KPI BUCKETS (COLORED CARDS) ---
 if not df.empty:
-    k1, k2, k3, k4 = st.columns([1, 1, 1, 2.5])
-    k1.metric("Global", len(df))
-    k2.metric("Open", len(df[~df['status'].isin(["Resolved", "Closed"])]))
-    k3.metric("Resolved", len(df[df['status'].isin(["Resolved", "Closed"])]))
+    k1, k2, k3 = st.columns(3)
+    
+    with k1:
+        st.markdown(f'<div class="metric-card global-bucket"><h3>Global Defects</h3><h1>{len(df)}</h1></div>', unsafe_allow_html=True)
+    with k2:
+        open_num = len(df[~df['status'].isin(["Resolved", "Closed"])])
+        st.markdown(f'<div class="metric-card open-bucket"><h3>Open Defects</h3><h1>{open_num}</h1></div>', unsafe_allow_html=True)
+    with k3:
+        res_num = len(df[df['status'].isin(["Resolved", "Closed"])])
+        st.markdown(f'<div class="metric-card resolved-bucket"><h3>Resolved</h3><h1>{res_num}</h1></div>', unsafe_allow_html=True)
 
 st.divider()
 
-# Tab keys prevent jumping
-tabs = st.tabs(["📂 Explorer", "➕ Register", "📊 Insights"])
+# --- MAIN CONTENT AREA ---
+tab_explorer, tab_insights, tab_register = st.tabs(["📂 Workspace Explorer", "📊 Performance Insights", "➕ Register Defect"])
 
-with tabs[0]:
-    search_col, export_col = st.columns([11, 1])
-    with search_col:
-        search_query = st.text_input("🔍 Search", placeholder="Filter table...", label_visibility="collapsed")
-    with export_col:
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 CSV", data=csv, file_name="astra.csv")
+with tab_explorer:
+    st.write("### All Defects")
+    st.caption("Use the Sidebar to filter results. Select a row to manage record details.")
+    
+    # Selection logic
+    selection = st.dataframe(
+        filtered_df, 
+        use_container_width=True, 
+        hide_index=True, 
+        on_select="rerun", 
+        selection_mode="single-row"
+    )
 
-    if not df.empty:
-        display_df = df[df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)] if search_query else df
-        selection = st.dataframe(display_df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
-        rows = selection.get("selection", {}).get("rows", [])
-        if rows:
-            edit_modal(display_df.iloc[rows[0]])
-
-with tabs[1]:
-    with st.form("reg_form"):
-        st.subheader("New Entry")
+with tab_insights:
+    if not filtered_df.empty:
+        st.write("### Data Distribution")
         c1, c2 = st.columns(2)
-        comp = c1.selectbox("Company", ["4310", "8410"])
-        mod = c2.selectbox("Module", ["PLM", "PP", "FI", "SD", "MM", "QM"])
-        title = st.text_input("Summary *")
-        rep = st.text_input("Reporter *")
-        if st.form_submit_button("Submit", type="primary"):
+        with c1:
+            fig_pie = px.pie(filtered_df, names='status', hole=0.4, title="Status Breakdown",
+                             color_discrete_sequence=px.colors.qualitative.Bold)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with c2:
+            fig_bar = px.bar(filtered_df['priority'].value_counts().reset_index(), 
+                             x='index', y='priority', title="Priority Volume",
+                             labels={'index': 'Priority', 'priority': 'Count'})
+            st.plotly_chart(fig_bar, use_container_width=True)
+    else:
+        st.info("Adjust filters to view insights.")
+
+with tab_register:
+    with st.form("new_reg"):
+        st.subheader("Log New Defect")
+        reg_c1, reg_c2 = st.columns(2)
+        new_title = reg_c1.text_input("Summary *")
+        new_mod = reg_c2.selectbox("Module", ["PLM", "PP", "FI", "SD", "MM", "QM"])
+        new_pri = reg_c1.selectbox("Priority", ["P1", "P2", "P3", "P4"])
+        if st.form_submit_button("Submit to Astra"):
             st.success("Synchronizing...")
-            st.rerun()
-
-with tabs[2]:
-    if not df.empty:
-        # RESOLUTION PROGRESS
-        total = len(df)
-        resolved = len(df[df['status'].isin(["Resolved", "Closed"])])
-        st.write(f"**Resolution Progress: {resolved}/{total} ({int((resolved/total)*100)}%)**")
-        st.progress(resolved / total)
-
-        # CASCADING FILTERS IN A FORM TO PREVENT REFRESH JUMPING
-        excluded = ["defect_id", "description", "comments", "created_at", "updated_at", "defect_title"]
-        available_cols = [c for c in df.columns if c not in excluded]
-        
-        with st.form("chart_filter_form"):
-            sel_c1, sel_c2 = st.columns(2)
-            category = sel_c1.selectbox("Analyze Category", available_cols)
-            sub_values = df[category].unique().tolist()
-            selected_sub = sel_c2.multiselect(f"Filter {category}", sub_values, default=sub_values)
-            
-            update_btn = st.form_submit_button("Update Charts")
-
-        # Only render charts when btn is clicked or on load
-        chart_df = df[df[category].isin(selected_sub)]
-        if not chart_df.empty:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.plotly_chart(px.pie(chart_df, names=category, hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel), use_container_width=True)
-            with c2:
-                bar_data = chart_df[category].value_counts().reset_index()
-                bar_data.columns = [category, 'Count']
-                st.plotly_chart(px.bar(bar_data, x=category, y='Count', color=category), use_container_width=True)
