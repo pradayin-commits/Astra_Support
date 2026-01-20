@@ -6,57 +6,52 @@ from sqlalchemy import create_engine, text
 import plotly.express as px
 
 # ==========================================
-# 1. DESIGN & BRANDING (CENTERED & LEAN)
+# 1. DESIGN & BRANDING
 # ==========================================
 APP_NAME = "Astra Defect Tracker"
 st.set_page_config(page_title=APP_NAME, page_icon="🍏", layout="wide")
 
-# Custom CSS to remove sidebar, center header, and pull app up
+# Custom CSS for layout fixes
 st.markdown("""
     <style>
-    /* Remove sidebar space */
     [data-testid="stSidebar"] { display: none; }
-    
     .stApp { background-color: #f5f5f7; }
     
-    /* Pull app to the very top */
+    /* Remove top white space */
     .block-container {
-        padding-top: 0.5rem !important;
+        padding-top: 0rem !important;
         margin-top: -3.5rem !important;
-    }
-
-    /* Centered Header */
-    .header-container {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        padding-bottom: 10px;
     }
 
     /* KPI Buckets Styling */
     div[data-testid="stMetric"] {
         background-color: white;
         border: 1px solid #d2d2d7;
-        border-radius: 16px;
+        border-radius: 12px;
         padding: 15px !important;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.02);
+    }
+    
+    /* Aligning Logo and Title */
+    .title-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        padding: 10px 0;
     }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. DATABASE ENGINE
+# 2. DATABASE & DATA LOADING
 # ==========================================
 @st.cache_resource
 def get_engine():
     db_url = st.secrets.get("SUPABASE_DATABASE_URL") or os.getenv("SUPABASE_DATABASE_URL")
     if not db_url:
-        st.error("Missing SUPABASE_DATABASE_URL.")
+        st.error("Missing database URL.")
         st.stop()
-    # Ensure URL is clean for SQLAlchemy
     db_url = db_url.strip().replace("postgres://", "postgresql+psycopg2://", 1)
-    return create_engine(db_url, pool_pre_ping=True, connect_args={"sslmode": "require"})
+    return create_engine(db_url, pool_pre_ping=True)
 
 @st.cache_data(ttl=2)
 def load_data():
@@ -82,137 +77,103 @@ def generate_id(module, code):
 # ==========================================
 # 3. INTERACTIVE MODALS
 # ==========================================
-@st.dialog("✏️ Refine Defect")
+@st.dialog("✏️ Edit Defect")
 def edit_modal(row):
-    st.write(f"Editing Record: **{row['defect_id']}**")
     with st.form("edit_form", border=False):
-        col1, col2 = st.columns(2)
-        new_title = col1.text_input("Title", value=row["defect_title"])
+        c1, c2 = st.columns(2)
+        new_title = c1.text_input("Title", value=row["defect_title"])
+        new_status = c2.selectbox("Status", ["New", "In Progress", "Blocked", "Resolved", "Closed"], 
+                                 index=["New", "In Progress", "Blocked", "Resolved", "Closed"].index(row["status"]))
         
-        status_opts = ["New", "In Progress", "Blocked", "Resolved", "Closed"]
-        curr_status_idx = status_opts.index(row["status"]) if row["status"] in status_opts else 0
-        new_status = col2.selectbox("Status", status_opts, index=curr_status_idx)
+        new_pri = c1.selectbox("Priority", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"],
+                               index=["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"].index(row["priority"]))
+        new_resp = c2.text_input("Responsible", value=row.get("responsible", ""))
         
-        pri_opts = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"]
-        curr_pri_idx = pri_opts.index(row["priority"]) if row["priority"] in pri_opts else 1
-        new_pri = col1.selectbox("Priority", pri_opts, index=curr_pri_idx)
-        
-        new_resp = col2.text_input("Responsible Party", value=row.get("responsible", ""))
-        new_desc = st.text_area("Detailed Notes", value=row.get("description", ""))
-        
-        res_date = row["resolved_date"]
-        if new_status in ["Resolved", "Closed"]:
-            res_date = st.date_input("Resolution Date", value=row["resolved_date"] or dt.date.today())
-
-        if st.form_submit_button("Update System", type="primary", use_container_width=True):
+        if st.form_submit_button("Update Astra", type="primary", use_container_width=True):
             with get_engine().begin() as conn:
                 conn.execute(text("""
-                    UPDATE public.defects SET 
-                    defect_title=:title, status=:status, priority=:priority, 
-                    responsible=:resp, description=:desc, resolved_date=:res, updated_at=NOW()
-                    WHERE defect_id=:target_id
-                """), {
-                    "title": new_title, "status": new_status, "priority": new_pri, 
-                    "resp": new_resp, "desc": new_desc, "res": res_date, "target_id": row["defect_id"]
-                })
-            st.success("Synchronized.")
+                    UPDATE public.defects SET defect_title=:t, status=:s, priority=:p, responsible=:r, updated_at=NOW() 
+                    WHERE defect_id=:id
+                """), {"t": new_title, "s": new_status, "p": new_pri, "r": new_resp, "id": row["defect_id"]})
             load_data.clear()
             st.rerun()
 
-    if st.button("🗑️ Delete Record", type="secondary", use_container_width=True):
-        confirm_delete(row["defect_id"])
-
-@st.dialog("⚠️ Safety Check")
-def confirm_delete(defect_id):
-    st.error("Permanent Deletion?")
-    if st.button("Confirm", type="primary", use_container_width=True):
-        with get_engine().begin() as conn:
-            conn.execute(text("DELETE FROM public.defects WHERE defect_id = :id"), {"id": defect_id})
-        load_data.clear()
-        st.rerun()
-
 # ==========================================
-# 4. MAIN UI EXECUTION
+# 4. MAIN UI
 # ==========================================
 df = load_data()
 
-# --- HEADER & LOGO ---
-st.markdown('<div class="header-container">', unsafe_allow_html=True)
-if os.path.exists("logo.png"):
-    st.image("logo.png", width=120)
-else:
-    st.title("🍏 ASTRA")
-st.title(f"{APP_NAME}")
-st.markdown('</div>', unsafe_allow_html=True)
+# Logo + Header Row
+head_col1, head_col2 = st.columns([1, 8])
+with head_col1:
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=100)
+with head_col2:
+    st.markdown(f"## {APP_NAME}")
 
-# --- KPI BUCKETS ---
+# Metric Buckets
+m1, m2, m3 = st.columns(3)
 if not df.empty:
-    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Global Defects", len(df))
     m2.metric("Open Defects", len(df[~df['status'].isin(["Resolved", "Closed"])]))
     m3.metric("Resolved", len(df[df['status'].isin(["Resolved", "Closed"])]))
-    
-    csv = df.to_csv(index=False).encode('utf-8')
-    m4.download_button("📥 Export CSV", data=csv, file_name="astra_export.csv", use_container_width=True)
 
 st.divider()
 
-# --- WORKSPACE TABS ---
-tab_explore, tab_register, tab_insights = st.tabs(["📂 Explorer", "➕ Register", "📊 Dynamic Insights"])
+tab_explore, tab_register, tab_insights = st.tabs(["📂 Explorer", "➕ Register", "📊 Insights"])
 
 with tab_explore:
     if df.empty:
-        st.info("Database Empty.")
+        st.info("No data found.")
     else:
-        st.caption("Excel-style: Click headers to sort or use the search icon in the top right of the table.")
-        selection = st.dataframe(df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+        # EXCEL EXPORT - Extreme Right Position
+        top_c1, top_c2 = st.columns([9, 1])
+        with top_c2:
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Export", data=csv, file_name="astra.csv", use_container_width=True)
+        
+        # EXCEL-STYLE TABLE WITH FILTERING
+        # Use the global search and column sorting for the Excel feel
+        selection = st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            column_config={
+                "defect_id": st.column_config.TextColumn("ID", width="small"),
+                "status": st.column_config.SelectboxColumn("Status", options=["New", "In Progress", "Blocked", "Resolved", "Closed"])
+            }
+        )
         
         rows = selection.get("selection", {}).get("rows", [])
         if rows:
             edit_modal(df.iloc[rows[0]])
 
 with tab_register:
-    st.subheader("Add New Defect")
-    with st.form("new_entry_form", clear_on_submit=True):
+    with st.form("reg_form"):
         c1, c2 = st.columns(2)
         comp = c1.selectbox("Company", ["4310", "8410"])
-        mod = c2.selectbox("Module", ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP", "BASIS"])
+        mod = c2.selectbox("Module", ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP"])
         title = st.text_input("Summary *")
-        c3, c4 = st.columns(2)
-        pri = c3.selectbox("Priority", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"], index=2)
-        rep = c4.text_input("Reporter *")
-        desc = st.text_area("Details")
-        
-        if st.form_submit_button("Commit to Astra", type="primary"):
+        pri = st.selectbox("Priority", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"], index=2)
+        rep = st.text_input("Reporter *")
+        if st.form_submit_button("Submit to Database", type="primary"):
             if title and rep:
                 new_id = generate_id(mod, comp)
                 with get_engine().begin() as conn:
                     conn.execute(text("""
-                        INSERT INTO public.defects (defect_id, company_code, module, defect_title, priority, status, reported_by, description, open_date)
-                        VALUES (:id, :comp, :mod, :title, :pri, 'New', :rep, :desc, :date)
-                    """), {"id": new_id, "comp": comp, "mod": mod, "title": title, "pri": pri, "rep": rep, "desc": desc, "date": dt.date.today()})
-                st.success(f"Registered: {new_id}")
+                        INSERT INTO public.defects (defect_id, company_code, module, defect_title, priority, status, reported_by, open_date)
+                        VALUES (:id, :c, :m, :t, :p, 'New', :r, :d)
+                    """), {"id": new_id, "c": comp, "m": mod, "t": title, "p": pri, "r": rep, "d": dt.date.today()})
                 load_data.clear()
                 st.rerun()
 
 with tab_insights:
     if not df.empty:
-        st.subheader("📊 Dynamic Chart Analysis")
-        # Select the column to slice the data by
-        chart_col = st.selectbox("Select Column to Analyze", ["priority", "status", "module", "company_code"], index=0)
-        
+        choice = st.selectbox("Analyze By:", ["priority", "status", "module"])
         c1, c2 = st.columns(2)
         with c1:
-            st.write(f"**{chart_col.title()} Distribution (Pie)**")
-            fig_pie = px.pie(df, names=chart_col, hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig_pie, use_container_width=True)
-            
+            st.plotly_chart(px.pie(df, names=choice, hole=0.4), use_container_width=True)
         with c2:
-            st.write(f"**{chart_col.title()} Count (Bar)**")
-            counts = df[chart_col].value_counts().reset_index()
-            # Handle column name differences in pandas versions
-            counts.columns = [chart_col, 'count']
-            fig_bar = px.bar(counts, x=chart_col, y='count', color=chart_col, color_discrete_sequence=px.colors.qualitative.Safe)
-            st.plotly_chart(fig_bar, use_container_width=True)
-    else:
-        st.info("No data for insights.")
+            st.plotly_chart(px.bar(df[choice].value_counts().reset_index(), x='index', y=choice), use_container_width=True)
