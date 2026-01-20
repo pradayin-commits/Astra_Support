@@ -48,29 +48,29 @@ def compute_age(open_date: Optional[dt.date], resolved_date: Optional[dt.date], 
 # ======================
 @st.cache_resource
 def get_engine():
-    # Attempt to get the URL from Streamlit Secrets or Environment Variables
+    # Looks in Streamlit Secrets first, then Environment Variables
     db_url = st.secrets.get("SUPABASE_DATABASE_URL") or os.getenv("SUPABASE_DATABASE_URL")
     
     if not db_url:
-        st.error("❌ Database URL is missing!")
-        st.info("Add `SUPABASE_DATABASE_URL` to your Streamlit Secrets or GitHub Codespaces Secrets.")
+        st.error("❌ SUPABASE_DATABASE_URL is missing.")
         st.stop()
 
-    # Ensure the URL uses the modern postgresql driver string for SQLAlchemy
+    # URL Cleaning & Driver Injection
+    db_url = db_url.strip()
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
-    elif db_url.startswith("postgresql://"):
+    elif db_url.startswith("postgresql://") and "+psycopg2" not in db_url:
         db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     return create_engine(
         db_url,
         pool_pre_ping=True,
-        # SSL is required for Supabase
         connect_args={"sslmode": "require"},
     )
 
 @st.cache_data(show_spinner=False, ttl=2)
 def load_defects() -> pd.DataFrame:
+    # Query updated to exclude seq_id to prevent column errors
     q = text("""
         select 
           company_code as "Company Code",
@@ -90,8 +90,7 @@ def load_defects() -> pd.DataFrame:
           coalesce(description,'') as "Description",
           coalesce(steps,'') as "Description / Steps",
           created_at as "Created At",
-          updated_at as "Updated At",
-          seq_id as "_seq_id"
+          updated_at as "Updated At"
         from public.defects
         order by created_at desc
     """)
@@ -116,8 +115,15 @@ def load_defects() -> pd.DataFrame:
 def generate_defect_id(module: str, company_code: str) -> str:
     mod = (module or "OTHER").strip().upper()
     comp = COMPANY_INDEX.get(company_code, "0")
-    with get_engine().begin() as conn:
-        seq_val = conn.execute(text("select nextval('public.defect_seq')")).scalar_one()
+    
+    try:
+        with get_engine().begin() as conn:
+            seq_val = conn.execute(text("select nextval('public.defect_seq')")).scalar_one()
+    except Exception:
+        # Fail-safe: if sequence isn't in DB, use a timestamp-based fallback or default
+        st.warning("Sequence 'defect_seq' not found in Supabase. Using fallback ID.")
+        seq_val = dt.datetime.now().strftime("%S%f")[:3] 
+
     return f"{mod}-{comp}-{int(seq_val):03d}"
 
 def insert_defect(payload: dict) -> None:
@@ -248,7 +254,7 @@ st.subheader("📋 Defects")
 df = load_defects()
 
 if df.empty:
-    st.info("No defects found.")
+    st.info("No defects found in the database.")
     st.stop()
 
 view = df.copy()
