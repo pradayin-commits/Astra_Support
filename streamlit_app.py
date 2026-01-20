@@ -10,12 +10,19 @@ from sqlalchemy import create_engine, text
 APP_NAME = "Astra Defect Tracker"
 st.set_page_config(page_title=APP_NAME, page_icon="🍏", layout="wide")
 
-# Custom CSS for high-end corporate feel
+# Custom CSS for high-end feel and REMOVING TOP WHITE SPACE
 st.markdown("""
     <style>
     .stApp { background-color: #f5f5f7; }
     
-    /* Metric Card Styling */
+    /* REMOVE TOP WHITE SPACE */
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 0rem !important;
+        margin-top: -2rem !important;
+    }
+
+    /* Metric Card Styling (The Buckets) */
     div[data-testid="stMetric"] {
         background-color: white;
         border: 1px solid #d2d2d7;
@@ -30,12 +37,6 @@ st.markdown("""
         font-weight: 500 !important;
         transition: 0.3s;
     }
-    
-    /* DataFrame selection color */
-    div[data-testid="stDataFrame"] {
-        border-radius: 12px;
-        overflow: hidden;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -49,7 +50,6 @@ def get_engine():
         st.error("Missing SUPABASE_DATABASE_URL in secrets.")
         st.stop()
     
-    # Clean URL and inject correct driver
     db_url = db_url.strip()
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
@@ -68,7 +68,6 @@ def load_data():
                 df["open_date"] = pd.to_datetime(df["open_date"]).dt.date
                 df["resolved_date"] = pd.to_datetime(df["resolved_date"], errors="coerce").dt.date
                 
-                # Logic for "Time to Resolve" (Lead Time)
                 def calc_lead_time(row):
                     if pd.notnull(row["resolved_date"]):
                         return (row["resolved_date"] - row["open_date"]).days
@@ -80,6 +79,7 @@ def load_data():
         st.error(f"Engine connection failed: {e}")
         return pd.DataFrame()
 
+# ... [generate_id, edit_modal, confirm_delete_modal functions remain same as your original] ...
 def generate_id(module, code):
     try:
         with get_engine().begin() as conn:
@@ -88,24 +88,19 @@ def generate_id(module, code):
     except:
         return f"{module.upper()}-{code}-{dt.datetime.now().strftime('%S%f')[:3]}"
 
-# ==========================================
-# 3. INTERACTIVE MODALS (EDIT & DELETE)
-# ==========================================
 @st.dialog("✏️ Refine Defect")
 def edit_modal(row):
     st.write(f"Editing Record: **{row['defect_id']}**")
-    
     with st.form("edit_form", border=False):
         col1, col2 = st.columns(2)
         new_title = col1.text_input("Title", value=row["defect_title"])
-        new_status = col2.selectbox("Status", ["New", "In Progress", "Blocked", "Resolved", "Closed"], index=0)
-        
-        new_pri = col1.selectbox("Priority", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"], index=1)
+        new_status = col2.selectbox("Status", ["New", "In Progress", "Blocked", "Resolved", "Closed"], 
+                                   index=["New", "In Progress", "Blocked", "Resolved", "Closed"].index(row['status']) if row['status'] in ["New", "In Progress", "Blocked", "Resolved", "Closed"] else 0)
+        new_pri = col1.selectbox("Priority", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"], 
+                                 index=["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"].index(row['priority']) if row['priority'] in ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"] else 2)
         new_resp = col2.text_input("Responsible Party", value=row.get("responsible", ""))
-        
         new_desc = st.text_area("Detailed Notes", value=row.get("description", ""))
         
-        # Resolve Date Logic
         res_date = row["resolved_date"]
         if new_status in ["Resolved", "Closed"]:
             res_date = st.date_input("Resolution Date", value=row["resolved_date"] or dt.date.today())
@@ -142,25 +137,40 @@ def confirm_delete_modal(defect_id):
 # ==========================================
 # 4. MAIN DASHBOARD UI
 # ==========================================
-st.title(f"🍏 {APP_NAME}")
-st.caption("Astra Support | Engineering & Quality Assurance")
-
 df = load_data()
 
-# --- TOP KPI METRICS ---
+# --- SIDEBAR BRANDING & FILTERS ---
+with st.sidebar:
+    st.image("logo.png", use_container_width=True) # Ensure logo.png is in your root folder
+    st.title("Astra Control")
+    st.divider()
+    st.subheader("Global Filters")
+    
+    status_filter = st.multiselect("Status", df['status'].unique() if not df.empty else [], default=df['status'].unique() if not df.empty else [])
+    priority_filter = st.multiselect("Priority", df['priority'].unique() if not df.empty else [], default=df['priority'].unique() if not df.empty else [])
+
+# Apply Filters
+if not df.empty:
+    filtered_df = df[df['status'].isin(status_filter) & df['priority'].isin(priority_filter)]
+else:
+    filtered_df = df
+
+st.title(f"🍏 {APP_NAME}")
+
+# --- TOP KPI METRICS (THE BUCKETS) ---
 if not df.empty:
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Global Defects", len(df))
-    m2.metric("Critical (P1)", len(df[df['priority'].str.contains("P1", na=False)]))
     
-    # Performance Calculation
-    closed_df = df[df['status'].isin(["Resolved", "Closed"])]
-    avg_lead = closed_df["Lead Time (Days)"].mean() if not closed_df.empty else 0
-    m3.metric("Avg Resolution", f"{avg_lead:.1f} Days")
+    open_count = len(df[~df['status'].isin(["Resolved", "Closed"])])
+    m2.metric("Open Defects", open_count)
     
-    # Export
+    resolved_count = len(df[df['status'].isin(["Resolved", "Closed"])])
+    m3.metric("Resolved Defects", resolved_count)
+    
+    # Export Button in 4th Column
     csv = df.to_csv(index=False).encode('utf-8')
-    m4.download_button("📥 Data Export (CSV)", data=csv, file_name="astra_export.csv", use_container_width=True)
+    m4.download_button("📥 Export CSV", data=csv, file_name="astra_export.csv", use_container_width=True)
 
 # --- WORKSPACE TABS ---
 tab_explore, tab_register, tab_insights = st.tabs([
@@ -170,12 +180,12 @@ tab_explore, tab_register, tab_insights = st.tabs([
 ])
 
 with tab_explore:
-    if df.empty:
-        st.info("The Astra database is currently empty.")
+    if filtered_df.empty:
+        st.info("No records match your filters.")
     else:
         st.write("Click a row to manage record details.")
         selection = st.dataframe(
-            df, 
+            filtered_df, 
             use_container_width=True, 
             hide_index=True, 
             on_select="rerun", 
@@ -184,23 +194,20 @@ with tab_explore:
         
         rows = selection.get("selection", {}).get("rows", [])
         if rows:
-            edit_modal(df.iloc[rows[0]])
+            edit_modal(filtered_df.iloc[rows[0]])
 
+# ... [tab_register and tab_insights remain same as your original] ...
 with tab_register:
     st.subheader("New Defect Entry")
     with st.form("new_entry_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
         comp = c1.selectbox("Company Entity", ["4310", "8410"])
         mod = c2.selectbox("Core Module", ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP", "BASIS"])
-        
         title = st.text_input("Summary *")
-        
         c3, c4 = st.columns(2)
         pri = c3.selectbox("Severity", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"], index=2)
         rep = c4.text_input("Logged By *")
-        
         desc = st.text_area("Observations / Steps to Reproduce")
-        
         if st.form_submit_button("Commit to Database", type="primary"):
             if not title or not rep:
                 st.warning("Required fields (*) are missing.")
