@@ -11,10 +11,10 @@ from sqlalchemy import create_engine, text
 # App config
 # ======================
 APP_NAME = "Astra"
-
 st.set_page_config(page_title=APP_NAME, page_icon="🎫", layout="wide")
+
 st.title("🎫 Astra")
-st.caption("Create defects at the top. Select a defect below and edit it in a clean form.")
+st.caption("Create a defect at the top. Select a defect below and edit it using a clean form.")
 
 
 # ======================
@@ -41,20 +41,8 @@ OPEN_WITH = ["SDS", "SNP", "Client", "Other"]
 
 
 # ======================
-# DB Engine
+# Helpers
 # ======================
-@st.cache_resource
-def get_engine():
-    db_url = os.getenv("SUPABASE_DATABASE_URL", "").strip()
-    if not db_url:
-        raise RuntimeError("SUPABASE_DATABASE_URL is missing (set Codespaces secret and restart)")
-    return create_engine(
-        db_url,
-        pool_pre_ping=True,
-        connect_args={"sslmode": "require"},
-    )
-
-
 def today() -> dt.date:
     return dt.date.today()
 
@@ -64,6 +52,45 @@ def compute_age(open_date: Optional[dt.date], resolved_date: Optional[dt.date], 
         return None
     end = resolved_date if status in {"Resolved", "Closed"} and resolved_date else today()
     return max(0, (end - open_date).days)
+
+
+# ======================
+# DB / Secrets
+# ======================
+def get_db_url() -> str:
+    """
+    Works in:
+    - Codespaces: environment variable SUPABASE_DATABASE_URL
+    - Streamlit Cloud: Secrets -> SUPABASE_DATABASE_URL
+    """
+    db_url = os.getenv("SUPABASE_DATABASE_URL", "").strip()
+    if db_url:
+        return db_url
+
+    # Streamlit Cloud secrets
+    try:
+        db_url = str(st.secrets.get("SUPABASE_DATABASE_URL", "")).strip()
+    except Exception:
+        db_url = ""
+
+    return db_url
+
+
+@st.cache_resource
+def get_engine():
+    db_url = get_db_url()
+    if not db_url:
+        raise RuntimeError(
+            "SUPABASE_DATABASE_URL is missing. "
+            "Set it in Streamlit Cloud → App Settings → Secrets, "
+            "or as an environment variable in Codespaces, then restart."
+        )
+
+    return create_engine(
+        db_url,
+        pool_pre_ping=True,
+        connect_args={"sslmode": "require"},
+    )
 
 
 # ======================
@@ -101,17 +128,22 @@ def load_defects() -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Ensure date dtype -> python date for age calc
     df["Open Date"] = pd.to_datetime(df["Open Date"]).dt.date
     df["Resolved Date"] = pd.to_datetime(df["Resolved Date"], errors="coerce").dt.date
-    df["Age (days)"] = df.apply(lambda r: compute_age(r["Open Date"], r["Resolved Date"], str(r["Status"])), axis=1)
+    df["Age (days)"] = df.apply(
+        lambda r: compute_age(r["Open Date"], r["Resolved Date"], str(r["Status"])),
+        axis=1,
+    )
     return df
 
 
 def generate_defect_id(module: str, company_code: str) -> str:
     """
-    Collision-safe: uses DB sequence. Format: <MODULE>-<CompanyIndex>-<SEQ:03+>
-    Example: PLM-1-001, PLM-1-002 ... (sequence is global, but still readable)
+    Collision-safe ID using DB sequence for uniqueness.
+    Format: <MODULE>-<CompanyIndex>-<SEQ:03d>
+    Example: PLM-1-001, FI-2-014
+
+    Requires: public.defect_seq sequence exists (you said you ran the SQL).
     """
     mod = (module or "OTHER").strip().upper()
     comp = COMPANY_INDEX.get(company_code, "0")
@@ -119,7 +151,6 @@ def generate_defect_id(module: str, company_code: str) -> str:
     with get_engine().begin() as conn:
         seq_val = conn.execute(text("select nextval('public.defect_seq')")).scalar_one()
 
-    # keep last 3 digits for display; still unique because seq_val is stored in table too
     return f"{mod}-{comp}-{int(seq_val):03d}"
 
 
@@ -177,7 +208,7 @@ company_f = st.sidebar.selectbox("Company Code", ["All"] + COMPANY_CODES)
 module_f = st.sidebar.selectbox("Module", ["All"] + MODULES)
 status_f = st.sidebar.selectbox("Status", ["All"] + STATUSES)
 priority_f = st.sidebar.selectbox("Priority", ["All"] + PRIORITIES)
-search = st.sidebar.text_input("Search").lower().strip()
+search = st.sidebar.text_input("Search (ID / Title / Responsible / Reported By)").lower().strip()
 
 
 # ======================
@@ -185,8 +216,9 @@ search = st.sidebar.text_input("Search").lower().strip()
 # ======================
 st.subheader("➕ Create Defect")
 
-with st.form("create_form"):
+with st.form("create_form", clear_on_submit=True):
     c1, c2, c3, c4 = st.columns(4)
+
     company_code = c1.selectbox("Company Code", COMPANY_CODES)
     open_date = c2.date_input("Open Date", today())
     module = c3.selectbox("Module", MODULES)
@@ -195,18 +227,21 @@ with st.form("create_form"):
     c4.text_input("Defect ID (auto)", defect_id_preview, disabled=True)
 
     defect_title = st.text_input("Defect Title *")
-    defect_type = st.selectbox("Defect Type", DEFECT_TYPES)
-    priority = st.selectbox("Priority", PRIORITIES, index=1)
-    status = st.selectbox("Status", STATUSES, index=0)
+
+    c5, c6, c7, c8 = st.columns(4)
+    defect_type = c5.selectbox("Defect Type", DEFECT_TYPES, index=0)
+    priority = c6.selectbox("Priority", PRIORITIES, index=1)
+    status = c7.selectbox("Status", STATUSES, index=0)  # default New
+    environment = c8.selectbox("Environment", ENVIRONMENTS, index=0)
+
+    c9, c10, c11 = st.columns(3)
+    open_with = c9.selectbox("Open with", OPEN_WITH, index=0)
+    reported_by = c10.text_input("Reported By *")
+    responsible = c11.text_input("Responsible")
 
     resolved_date = None
     if status in {"Resolved", "Closed"}:
         resolved_date = st.date_input("Resolved Date", today())
-
-    open_with = st.selectbox("Open with", OPEN_WITH)
-    reported_by = st.text_input("Reported By *")
-    responsible = st.text_input("Responsible")
-    environment = st.selectbox("Environment", ENVIRONMENTS)
 
     linked_test_id = st.text_input("Linked Test ID")
     description = st.text_area("Description")
@@ -215,8 +250,10 @@ with st.form("create_form"):
     submit = st.form_submit_button("Create")
 
 if submit:
-    if not defect_title.strip() or not reported_by.strip():
-        st.error("Defect Title and Reported By are required.")
+    if not defect_title.strip():
+        st.error("Defect Title is required.")
+    elif not reported_by.strip():
+        st.error("Reported By is required.")
     else:
         real_defect_id = generate_defect_id(module, company_code)
         with st.spinner("Saving defect..."):
@@ -240,7 +277,7 @@ if submit:
                     "steps": steps.strip(),
                 }
             )
-        st.success(f"Defect {real_defect_id} created.")
+        st.success(f"Defect created: {real_defect_id}")
         st.rerun()
 
 
@@ -253,93 +290,139 @@ st.subheader("📋 Defects")
 try:
     df = load_defects()
 except Exception as e:
-    st.error("Database connection failed. Check SUPABASE_DATABASE_URL secret and restart Codespace.")
+    st.error("Database connection failed. Check SUPABASE_DATABASE_URL and Supabase setup (use Session Pooler URL if IPv6 issues).")
     st.exception(e)
     st.stop()
 
 if df.empty:
     st.info("No defects yet.")
-else:
-    view = df.copy()
+    st.stop()
 
-    if company_f != "All":
-        view = view[view["Company Code"] == company_f]
-    if module_f != "All":
-        view = view[view["Module"] == module_f]
-    if status_f != "All":
-        view = view[view["Status"] == status_f]
-    if priority_f != "All":
-        view = view[view["Priority"] == priority_f]
-    if search:
-        view = view[
-            view[["Defect ID", "Defect Title", "Reported By", "Responsible"]]
-            .astype(str)
-            .agg(" ".join, axis=1)
-            .str.lower()
-            .str.contains(search, na=False)
-        ]
+view = df.copy()
 
-    # Hide internal seq_id column
-    show_cols = [c for c in view.columns if c != "_seq_id"]
+if company_f != "All":
+    view = view[view["Company Code"] == company_f]
+if module_f != "All":
+    view = view[view["Module"] == module_f]
+if status_f != "All":
+    view = view[view["Status"] == status_f]
+if priority_f != "All":
+    view = view[view["Priority"] == priority_f]
+if search:
+    view = view[
+        view[["Defect ID", "Defect Title", "Reported By", "Responsible"]]
+        .astype(str)
+        .agg(" ".join, axis=1)
+        .str.lower()
+        .str.contains(search, na=False)
+    ]
 
-    st.dataframe(view[show_cols], width="stretch", hide_index=True)
+show_cols = [
+    "Company Code",
+    "Open Date",
+    "Module",
+    "Defect ID",
+    "Defect Title",
+    "Defect Type",
+    "Priority",
+    "Status",
+    "Resolved Date",
+    "Open with",
+    "Reported By",
+    "Responsible",
+    "Age (days)",
+    "Environment",
+    "Linked Test ID",
+    "Description",
+    "Description / Steps",
+    "Created At",
+    "Updated At",
+]
 
-    st.markdown("### ✏️ Edit Defect")
-    selected_id = st.selectbox("Select Defect ID", view["Defect ID"].tolist())
+st.dataframe(view[show_cols], width="stretch", hide_index=True)
 
-    row = df[df["Defect ID"] == selected_id].iloc[0]
+st.markdown("### ✏️ Edit Defect")
 
-    with st.form("edit_form"):
-        company_code_e = st.selectbox("Company Code", COMPANY_CODES, index=COMPANY_CODES.index(row["Company Code"]))
-        open_date_e = st.date_input("Open Date", row["Open Date"])
-        module_e = st.selectbox("Module", MODULES, index=MODULES.index(row["Module"]))
+selected_id = st.selectbox("Select Defect ID", view["Defect ID"].tolist())
+row = df[df["Defect ID"] == selected_id].iloc[0]
 
-        defect_title_e = st.text_input("Defect Title *", row["Defect Title"])
-        defect_type_e = st.selectbox("Defect Type", DEFECT_TYPES, index=DEFECT_TYPES.index(row["Defect Type"]) if row["Defect Type"] in DEFECT_TYPES else 0)
-        priority_e = st.selectbox("Priority", PRIORITIES, index=PRIORITIES.index(row["Priority"]) if row["Priority"] in PRIORITIES else 1)
-        status_e = st.selectbox("Status", STATUSES, index=STATUSES.index(row["Status"]) if row["Status"] in STATUSES else 0)
+with st.form("edit_form"):
+    c1, c2, c3 = st.columns(3)
+    company_code_e = c1.selectbox("Company Code", COMPANY_CODES, index=COMPANY_CODES.index(row["Company Code"]))
+    open_date_e = c2.date_input("Open Date", row["Open Date"])
+    module_e = c3.selectbox("Module", MODULES, index=MODULES.index(row["Module"]))
 
-        resolved_date_e = row["Resolved Date"]
-        if status_e in {"Resolved", "Closed"}:
-            resolved_date_e = st.date_input("Resolved Date", resolved_date_e or today())
-        else:
-            resolved_date_e = None
+    defect_title_e = st.text_input("Defect Title *", row["Defect Title"])
 
-        open_with_e = st.selectbox("Open with", OPEN_WITH, index=OPEN_WITH.index(row["Open with"]) if row["Open with"] in OPEN_WITH else 0)
-        reported_by_e = st.text_input("Reported By *", row["Reported By"])
-        responsible_e = st.text_input("Responsible", row["Responsible"])
-        environment_e = st.selectbox("Environment", ENVIRONMENTS, index=ENVIRONMENTS.index(row["Environment"]) if row["Environment"] in ENVIRONMENTS else 0)
+    c4, c5, c6, c7 = st.columns(4)
+    defect_type_e = c4.selectbox(
+        "Defect Type",
+        DEFECT_TYPES,
+        index=DEFECT_TYPES.index(row["Defect Type"]) if row["Defect Type"] in DEFECT_TYPES else 0,
+    )
+    priority_e = c5.selectbox(
+        "Priority",
+        PRIORITIES,
+        index=PRIORITIES.index(row["Priority"]) if row["Priority"] in PRIORITIES else 1,
+    )
+    status_e = c6.selectbox(
+        "Status",
+        STATUSES,
+        index=STATUSES.index(row["Status"]) if row["Status"] in STATUSES else 0,
+    )
+    environment_e = c7.selectbox(
+        "Environment",
+        ENVIRONMENTS,
+        index=ENVIRONMENTS.index(row["Environment"]) if row["Environment"] in ENVIRONMENTS else 0,
+    )
 
-        linked_test_id_e = st.text_input("Linked Test ID", row["Linked Test ID"])
-        description_e = st.text_area("Description", row["Description"])
-        steps_e = st.text_area("Description / Steps", row["Description / Steps"])
+    c8, c9, c10 = st.columns(3)
+    open_with_e = c8.selectbox(
+        "Open with",
+        OPEN_WITH,
+        index=OPEN_WITH.index(row["Open with"]) if row["Open with"] in OPEN_WITH else 0,
+    )
+    reported_by_e = c9.text_input("Reported By *", row["Reported By"])
+    responsible_e = c10.text_input("Responsible", row["Responsible"])
 
-        save = st.form_submit_button("Save Changes")
+    resolved_date_e = row["Resolved Date"]
+    if status_e in {"Resolved", "Closed"}:
+        resolved_date_e = st.date_input("Resolved Date", resolved_date_e or today())
+    else:
+        resolved_date_e = None
 
-    if save:
-        if not defect_title_e.strip() or not reported_by_e.strip():
-            st.error("Defect Title and Reported By are required.")
-        else:
-            with st.spinner("Saving changes..."):
-                update_defect(
-                    selected_id,
-                    {
-                        "company_code": company_code_e,
-                        "open_date": open_date_e,
-                        "module": module_e,
-                        "defect_title": defect_title_e.strip(),
-                        "defect_type": defect_type_e,
-                        "priority": priority_e,
-                        "status": status_e,
-                        "resolved_date": resolved_date_e,
-                        "open_with": open_with_e,
-                        "reported_by": reported_by_e.strip(),
-                        "responsible": responsible_e.strip(),
-                        "environment": environment_e,
-                        "linked_test_id": linked_test_id_e.strip(),
-                        "description": description_e.strip(),
-                        "steps": steps_e.strip(),
-                    },
-                )
-            st.success("Defect updated.")
-            st.rerun()
+    linked_test_id_e = st.text_input("Linked Test ID", row["Linked Test ID"])
+    description_e = st.text_area("Description", row["Description"])
+    steps_e = st.text_area("Description / Steps", row["Description / Steps"])
+
+    save = st.form_submit_button("Save Changes")
+
+if save:
+    if not defect_title_e.strip():
+        st.error("Defect Title is required.")
+    elif not reported_by_e.strip():
+        st.error("Reported By is required.")
+    else:
+        with st.spinner("Saving changes..."):
+            update_defect(
+                selected_id,
+                {
+                    "company_code": company_code_e,
+                    "open_date": open_date_e,
+                    "module": module_e,
+                    "defect_title": defect_title_e.strip(),
+                    "defect_type": defect_type_e,
+                    "priority": priority_e,
+                    "status": status_e,
+                    "resolved_date": resolved_date_e,
+                    "open_with": open_with_e,
+                    "reported_by": reported_by_e.strip(),
+                    "responsible": responsible_e.strip(),
+                    "environment": environment_e,
+                    "linked_test_id": linked_test_id_e.strip(),
+                    "description": description_e.strip(),
+                    "steps": steps_e.strip(),
+                },
+            )
+        st.success("Defect updated.")
+        st.rerun()
