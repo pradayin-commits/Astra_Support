@@ -52,7 +52,7 @@ def load_data():
     try:
         with get_engine().connect() as conn:
             df = pd.read_sql(text("SELECT * FROM public.defects ORDER BY id DESC"), conn)
-            df['id'] = df['id'].astype(str) # String cast for JS safety
+            df['id'] = df['id'].astype(str) # For LinkColumn
             return df
     except: return pd.DataFrame()
 
@@ -161,6 +161,7 @@ if not df.empty:
 
 st.divider()
 
+# TAB NAVIGATION
 tab_tracker, tab_insights = st.tabs(["📂 Defect Tracker", "📊 Performance Insights"])
 
 with tab_tracker:
@@ -169,9 +170,8 @@ with tab_tracker:
         if st.button("➕ ADD NEW DEFECT", use_container_width=True):
             create_defect_dialog()
 
-    st.subheader("Defect Tracker")
+    st.subheader("Defect Table")
     search = st.text_input("🔍 Quick Filter", placeholder="Search registry...")
-    
     st.info("💡 **Instruction:** Click any **ID number** to modify the record or assign an agent.")
 
     disp_df = df
@@ -179,34 +179,18 @@ with tab_tracker:
         disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
     
     if not disp_df.empty:
-        # ALL FIELDS DISPLAYED - NO HIDDEN COUNT
-        # We explicitly list all columns and configure widths to ensure they fit.
+        # Full field display to avoid hidden count
         event = st.dataframe(
-            disp_df[[
-                'id', 'defect_title', 'module', 'category', 'environment', 
-                'priority', 'reported_by', 'reporter_email', 'assigned_to', 'status'
-            ]], 
-            use_container_width=True, 
-            hide_index=True, 
-            on_select="rerun", 
-            selection_mode="single-row",
+            disp_df[['id', 'defect_title', 'module', 'category', 'environment', 'priority', 'reported_by', 'reporter_email', 'assigned_to', 'status']], 
+            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row",
             column_config={
                 "id": st.column_config.LinkColumn("ID", width="small"),
                 "defect_title": st.column_config.TextColumn("Summary", width="medium"),
-                "module": st.column_config.TextColumn("Module", width="small"),
-                "category": st.column_config.TextColumn("Category", width="small"),
-                "environment": st.column_config.TextColumn("Env", width="small"),
-                "priority": st.column_config.TextColumn("Priority", width="small"),
-                "reported_by": st.column_config.TextColumn("Reporter", width="small"),
-                "reporter_email": st.column_config.TextColumn("Email", width="medium"),
-                "assigned_to": st.column_config.TextColumn("Assigned To", width="small"),
-                "status": st.column_config.TextColumn("Status", width="small")
+                "reporter_email": st.column_config.TextColumn("Email", width="medium")
             }
         )
-
         if event and event.selection.rows:
             st.session_state.editing_id = disp_df.iloc[event.selection.rows[0]]['id']
-
         if st.session_state.editing_id:
             rec = disp_df[disp_df['id'] == st.session_state.editing_id].iloc[0].to_dict()
             edit_defect_dialog(rec)
@@ -214,8 +198,31 @@ with tab_tracker:
         st.warning("No records found.")
 
 with tab_insights:
-    st.header("Performance Insights")
+    st.header("📊 Performance Insights")
     if not df.empty:
+        # --- THE 3-DROP-DOWN DIAGNOSTIC SYSTEM ---
+        c1, c2, c3 = st.columns(3)
+        dim_options = {"module": "Module", "priority": "Priority", "status": "Status", "category": "Category", "environment": "Env"}
+        
+        primary_dim = c1.selectbox("1. Analysis Dimension", options=list(dim_options.keys()), format_func=lambda x: dim_options[x])
+        unique_vals = sorted(df[primary_dim].unique().tolist())
+        selected_val = c2.selectbox(f"2. Filter Specific {dim_options[primary_dim]}", options=["All Data"] + unique_vals)
+        pivot_dim = c3.selectbox("3. Pivot/Compare By", options=[opt for opt in dim_options.keys() if opt != primary_dim], format_func=lambda x: dim_options[x])
+
+        chart_df = df if selected_val == "All Data" else df[df[primary_dim] == selected_val]
+        st.divider()
+
+        # --- 3-CHART LAYOUT ---
         g1, g2 = st.columns(2)
-        g1.plotly_chart(px.pie(df, names='priority', hole=0.4, title="Priority Distribution"), use_container_width=True)
-        g2.plotly_chart(px.bar(df.groupby('module').size().reset_index(name='Cnt'), x='module', y='Cnt', title="Module Volume"), use_container_width=True)
+        fig_bar = px.bar(chart_df.groupby(pivot_dim).size().reset_index(name='Count'), x=pivot_dim, y='Count', color=pivot_dim, title=f"Volume by {dim_options[pivot_dim]}", template="plotly_white")
+        g1.plotly_chart(fig_bar, use_container_width=True)
+        
+        fig_pie = px.pie(chart_df, names=pivot_dim, hole=0.5, title=f"% Distribution of {dim_options[pivot_dim]}")
+        g2.plotly_chart(fig_pie, use_container_width=True)
+
+        st.subheader("👤 Agent Workload")
+        agent_df = chart_df.groupby('assigned_to').size().reset_index(name='Items').sort_values('Items', ascending=False)
+        fig_agent = px.bar(agent_df, x='Items', y='assigned_to', orientation='h', title="Workload Distribution", color='Items', color_continuous_scale='Blues')
+        st.plotly_chart(fig_agent, use_container_width=True)
+    else:
+        st.warning("No data found for insights.")
