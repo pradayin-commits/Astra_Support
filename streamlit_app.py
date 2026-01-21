@@ -81,16 +81,21 @@ def create_defect_dialog():
         desc = st.text_area("Detailed Description")
         
         if st.form_submit_button("Submit to Astra", use_container_width=True):
-            if not title or not rep:
+            if not title.strip() or not rep.strip():
                 st.error("Fields marked * are mandatory.")
             else:
-                with get_engine().begin() as conn:
-                    conn.execute(text("""
-                        INSERT INTO public.defects (defect_title, module, priority, reported_by, description, status) 
-                        VALUES (:t, :m, :p, :r, :d, 'New')
-                    """), {"t": title, "m": mod, "p": pri, "r": rep, "d": desc})
-                st.cache_data.clear()
-                st.rerun()
+                try:
+                    with get_engine().begin() as conn:
+                        # We only send the columns the DB expects. SERIAL id is handled by Postgres.
+                        conn.execute(text("""
+                            INSERT INTO public.defects (defect_title, module, priority, reported_by, description, status) 
+                            VALUES (:t, :m, :p, :r, :d, 'New')
+                        """), {"t": title.strip(), "m": mod, "p": pri, "r": rep.strip(), "d": desc.strip()})
+                    st.success("Synchronized!")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Database Error: {e}")
 
 @st.dialog("✏️ Edit Defect")
 def edit_defect_dialog(record):
@@ -157,7 +162,7 @@ with tab_insights:
         g2.plotly_chart(px.bar(c_df.groupby(cat_2).size().reset_index(name='Cnt'), x=cat_2, y='Cnt', color=cat_2, title="Volume"), use_container_width=True)
 
 with tab_explorer:
-    st.subheader("Defect Registry")
+    st.subheader("Interactive Workspace")
     search = st.text_input("🔍 Search Workspace")
     disp_df = df
     if search:
