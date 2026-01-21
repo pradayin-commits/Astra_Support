@@ -6,203 +6,167 @@ from sqlalchemy import create_engine, text
 import plotly.express as px
 
 # ==========================================
-# 1. DESIGN & BRANDING
+# 1. APPLE-INSPIRED DESIGN (CSS)
 # ==========================================
-APP_NAME = "Astra Defect Tracker"
-st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Astra", page_icon="🛡️", layout="wide")
 
 st.markdown("""
     <style>
-    /* Overall Background */
-    .stApp { background-color: #f8f9fa; }
+    /* Clean Apple-like Background & Typography */
+    .stApp { background-color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     
-    /* Metric Card Styling */
+    /* Subtle Glassmorphism KPI Cards */
     .metric-card {
-        border-radius: 12px; padding: 20px; color: white; margin-bottom: 15px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border-radius: 16px; padding: 24px; color: #1d1d1f; margin-bottom: 10px;
+        background: #f5f5f7; border: 1px solid #d2d2d7;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        transition: transform 0.2s ease;
     }
-    .global-bucket { background: linear-gradient(135deg, #1e5799 0%, #2989d8 100%); }
-    .open-bucket { background: linear-gradient(135deg, #e67e22 0%, #d35400 100%); }
-    .resolved-bucket { background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); }
+    .metric-card:hover { transform: translateY(-2px); }
+    .metric-card h3 { margin: 0; font-size: 14px; font-weight: 500; color: #86868b; }
+    .metric-card h1 { margin: 10px 0 0 0; font-size: 36px; font-weight: 600; }
+
+    /* Green Primary Button (Apple Green) */
+    div[data-testid="stButton"] > button {
+        background-color: #34c759 !important;
+        color: white !important;
+        border-radius: 12px !important;
+        border: none !important;
+        padding: 10px 24px !important;
+        font-weight: 600 !important;
+        width: 100%;
+    }
     
-    /* Aligning the Create Button */
-    div[data-testid="stColumn"] > div > div > div > button {
-        margin-top: 25px;
-    }
+    /* Clean Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
+    .stTabs [data-baseweb="tab"] { font-weight: 600; color: #86868b; }
+    .stTabs [aria-selected="true"] { color: #0071e3 !important; border-bottom-color: #0071e3 !important; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. DATABASE CONNECTION
+# 2. DATABASE & CONSTANTS
 # ==========================================
+MODULES = ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP", "BASIS", "OTHER"]
+PRIORITIES = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"]
+STATUSES = ["New", "In Progress", "Blocked", "Resolved", "Closed", "Reopened"]
+
 @st.cache_resource
 def get_engine():
-    # Looks for connection string in Streamlit Secrets or Environment Variables
     db_url = st.secrets.get("SUPABASE_DATABASE_URL") or os.getenv("SUPABASE_DATABASE_URL")
-    if not db_url:
-        st.error("Missing SUPABASE_DATABASE_URL. Please check your secrets.")
-        st.stop()
-    # Fix for SQLAlchemy 2.0+ and Supabase Postgres strings
+    if not db_url: st.stop()
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
     return create_engine(db_url, pool_pre_ping=True)
 
 def load_data():
-    q = text("SELECT * FROM public.defects ORDER BY created_at DESC")
     try:
         with get_engine().connect() as conn:
-            return pd.read_sql(q, conn)
-    except Exception as e:
-        st.error(f"Database connection error: {e}")
+            return pd.read_sql(text("SELECT * FROM public.defects ORDER BY created_at DESC"), conn)
+    except:
         return pd.DataFrame()
 
 # ==========================================
-# 3. MODALS (CREATE DEFECT)
+# 3. CREATE MODAL
 # ==========================================
-@st.dialog("➕ Register New Defect")
+@st.dialog("➕ New Defect")
 def create_defect_dialog():
-    with st.form("new_defect_form", clear_on_submit=True):
-        title = st.text_input("Defect Summary *")
-        col1, col2 = st.columns(2)
-        mod = col1.selectbox("Module", ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP", "BASIS"])
-        pri = col2.selectbox("Priority", ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"])
-        desc = st.text_area("Steps to Reproduce / Description")
-        
-        if st.form_submit_button("Submit to Database", use_container_width=True):
-            if not title:
-                st.error("Title is required.")
-            else:
-                new_data = {
-                    "defect_title": title, "module": mod, "priority": pri,
-                    "description": desc, "status": "New", "created_at": dt.datetime.now()
-                }
-                with get_engine().begin() as conn:
-                    conn.execute(text("""
-                        INSERT INTO public.defects (defect_title, module, priority, description, status, created_at)
-                        VALUES (:defect_title, :module, :priority, :description, :status, :created_at)
-                    """), new_data)
-                st.success("Synchronized successfully!")
-                st.rerun()
+    with st.form("new_form", clear_on_submit=True):
+        t = st.text_input("Defect Title")
+        c1, c2 = st.columns(2)
+        m = c1.selectbox("Module", MODULES)
+        p = c2.selectbox("Priority", PRIORITIES)
+        rep = st.text_input("Reported By")
+        if st.form_submit_button("Commit to Astra"):
+            new_record = {"t": t, "m": m, "p": p, "r": rep, "s": "New", "now": dt.datetime.now()}
+            with get_engine().begin() as conn:
+                conn.execute(text("INSERT INTO public.defects (defect_title, module, priority, reported_by, status, created_at) VALUES (:t, :m, :p, :r, :s, :now)"), new_record)
+            st.rerun()
 
 # ==========================================
-# 4. MAIN APP LOGIC
+# 4. MAIN APP EXECUTION
 # ==========================================
 df = load_data()
 
-# --- HEADER SECTION ---
-col_title, col_btn = st.columns([0.8, 0.2])
-with col_title:
-    st.title(f"🛡️ {APP_NAME}")
-    st.caption("Centralized Defect Management & Performance Tracking")
-
-with col_btn:
-    if st.button("➕ Create New", type="primary", use_container_width=True):
-        create_defect_dialog()
-
-# --- SIDEBAR SEARCH & FILTERS ---
-with st.sidebar:
-    st.markdown("### 🔍 Search & Filter")
-    search_query = st.text_input("Global Search", placeholder="Search by title, desc...")
-    
-    if not df.empty:
-        available_mods = sorted(df['module'].unique())
-        sel_module = st.multiselect("Filter Modules", available_mods, default=available_mods)
-        
-        available_stats = sorted(df['status'].unique())
-        sel_status = st.multiselect("Filter Status", available_stats, default=available_stats)
-        
-        # Filtering logic
-        filtered_df = df[
-            (df['module'].isin(sel_module)) & 
-            (df['status'].isin(sel_status))
-        ]
-        
-        if search_query:
-            filtered_df = filtered_df[
-                filtered_df.apply(lambda row: search_query.lower() in row.astype(str).str.lower().values, axis=1)
-            ]
-    else:
-        filtered_df = df
-
-# --- KPI METRICS ---
+# --- HEADER & KPI ---
+st.title("🛡️ Astra")
 if not df.empty:
     k1, k2, k3 = st.columns(3)
-    k1.markdown(f'<div class="metric-card global-bucket"><h3>Total Defects</h3><h1>{len(df)}</h1></div>', unsafe_allow_html=True)
-    
-    active_count = len(df[~df["status"].isin(["Resolved", "Closed"])])
-    k2.markdown(f'<div class="metric-card open-bucket"><h3>Active Items</h3><h1>{active_count}</h1></div>', unsafe_allow_html=True)
-    
-    resolved_count = len(df[df["status"].isin(["Resolved", "Closed"])])
-    k3.markdown(f'<div class="metric-card resolved-bucket"><h3>Resolved</h3><h1>{resolved_count}</h1></div>', unsafe_allow_html=True)
+    k1.markdown(f'<div class="metric-card"><h3>Global Defects</h3><h1>{len(df)}</h1></div>', unsafe_allow_html=True)
+    k2.markdown(f'<div class="metric-card"><h3>Active</h3><h1>{len(df[~df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
+    k3.markdown(f'<div class="metric-card"><h3>Resolved</h3><h1>{len(df[df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
+
+# --- CREATE BUTTON POSITIONED ABOVE TABS ---
+st.write("")
+_, btn_col = st.columns([0.8, 0.2])
+with btn_col:
+    if st.button("➕ CREATE NEW DEFECT"):
+        create_defect_dialog()
 
 # --- TABBED CONTENT ---
 tab_insights, tab_explorer = st.tabs(["📊 Performance Insights", "📂 Workspace Explorer"])
 
 with tab_insights:
-    if not filtered_df.empty:
-        st.write("### Analytical Overview")
+    if not df.empty:
+        st.subheader("Dynamic Analytics")
+        # --- DRILL DOWN DROPDOWNS ---
         c1, c2 = st.columns(2)
         
-        with c1:
-            # Status Pie Chart
-            fig_pie = px.pie(filtered_df, names='status', hole=0.4, title="Status Distribution",
-                             color_discrete_sequence=px.colors.qualitative.Pastel)
+        # 1. Select Column
+        analysis_col = c1.selectbox("Analyze By (Column Name)", 
+                                     options=["module", "priority", "status", "reported_by"], 
+                                     format_func=lambda x: x.replace("_", " ").title())
+        
+        # 2. Select Dynamic Value
+        unique_vals = sorted(df[analysis_col].unique().tolist())
+        selected_val = c2.selectbox(f"Select Specific {analysis_col.title()}", options=["All"] + unique_vals)
+        
+        # Filter data for chart based on selections
+        chart_df = df if selected_val == "All" else df[df[analysis_col] == selected_val]
+        
+        # --- CHARTS ---
+        g1, g2 = st.columns(2)
+        with g1:
+            fig_pie = px.pie(chart_df, names='status', hole=0.6, title="Status Breakdown",
+                             color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_pie.update_layout(margin=dict(t=40, b=0, l=0, r=0))
             st.plotly_chart(fig_pie, use_container_width=True)
-            
-        with c2:
-            # Priority Bar Chart
-            # Grouping correctly to avoid the ValueError from before
-            bar_data = filtered_df.groupby('priority').size().reset_index(name='Count')
-            fig_bar = px.bar(bar_data, x='priority', y='Count', title="Priority Volume",
-                             color='priority', color_discrete_sequence=px.colors.qualitative.Safe)
+        
+        with g2:
+            # Dynamic Bar Chart based on the analysis column
+            bar_data = chart_df.groupby(analysis_col).size().reset_index(name='Count')
+            fig_bar = px.bar(bar_data, x=analysis_col, y='Count', title=f"Volume by {analysis_col.title()}",
+                             color_discrete_sequence=['#0071e3'])
+            fig_bar.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig_bar, use_container_width=True)
     else:
-        st.info("No data found for the current filters.")
+        st.info("Awaiting data...")
 
 with tab_explorer:
-    st.write("### Data Explorer")
-    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+    st.subheader("Interactive Workspace")
+    st.caption("Apple Experience: Edit values directly in the table below. Changes will sync to the cloud.")
     
-    # --- UPDATE SECTION ---
-    if not filtered_df.empty:
-        st.divider()
-        st.write("### ✏️ Edit or Remove Defect")
-        
-        # User selects which defect to act on
-        edit_target = st.selectbox("Select Defect Summary to modify:", filtered_df['defect_title'].tolist())
-        target_row = filtered_df[filtered_df['defect_title'] == edit_target].iloc[0]
-        
-        with st.expander(f"Modify Record: {edit_target}"):
-            col_u1, col_u2 = st.columns(2)
-            
-            new_status = col_u1.selectbox(
-                "Change Status", 
-                ["New", "In Progress", "Blocked", "Resolved", "Closed"],
-                index=["New", "In Progress", "Blocked", "Resolved", "Closed"].index(target_row['status'])
-            )
-            
-            new_priority = col_u2.selectbox(
-                "Change Priority", 
-                ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"],
-                index=["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"].index(target_row['priority'])
-            )
-            
-            # Action Buttons
-            btn_col1, btn_col2 = st.columns([0.2, 0.8])
-            
-            if btn_col1.button("Save Changes"):
-                with get_engine().begin() as conn:
-                    conn.execute(text("""
-                        UPDATE public.defects 
-                        SET status = :status, priority = :priority 
-                        WHERE id = :id
-                    """), {"status": new_status, "priority": new_priority, "id": target_row['id']})
-                st.success("Updated!")
-                st.rerun()
-            
-            if btn_col2.button("🗑️ Delete Defect", type="secondary"):
-                # Simple deletion (consider adding a confirmation checkbox for production)
-                with get_engine().begin() as conn:
-                    conn.execute(text("DELETE FROM public.defects WHERE id = :id"), {"id": target_row['id']})
-                st.warning("Defect deleted from database.")
-                st.rerun()
+    # --- APPLE-LIKE INLINE EDITING ---
+    # We use st.data_editor to allow direct editing
+    edited_df = st.data_editor(
+        df,
+        key="main_editor",
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic", # Allows adding/deleting rows directly
+        column_config={
+            "status": st.column_config.SelectboxColumn("Status", options=STATUSES, required=True),
+            "priority": st.column_config.SelectboxColumn("Priority", options=PRIORITIES, required=True),
+            "module": st.column_config.SelectboxColumn("Module", options=MODULES, required=True),
+            "created_at": st.column_config.DatetimeColumn("Created At", disabled=True),
+        }
+    )
+
+    # Logic to sync edited data back to Supabase
+    if st.button("🚀 Sync Changes to Cloud"):
+        with get_engine().begin() as conn:
+            # In a production environment, you would compare dataframes to update only changed rows.
+            # For simplicity here, we replace the table data.
+            edited_df.to_sql("defects", conn, if_exists="replace", index=False, schema="public")
+        st.success("Cloud Synchronization Complete.")
+        st.rerun()
