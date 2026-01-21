@@ -145,39 +145,24 @@ with tab_insights:
     if not df.empty:
         st.subheader("Multi-Tier Analytical Drill Down")
         d1, d2, d3 = st.columns(3)
-        
-        # Tier 1: Primary Category
         cat_1 = d1.selectbox("1. Filter Category", ["module", "priority", "status", "reported_by"])
-        
-        # Tier 2: Specific Value (Dynamic based on Category)
         unique_vals = sorted(df[cat_1].unique().tolist())
         val_1 = d2.selectbox(f"2. Select {cat_1.title()} Value", ["All Data"] + unique_vals)
-        
-        # Tier 3: Secondary Pivot (The chart dimension)
         cat_2 = d3.selectbox("3. Pivot Analytics By", [c for c in ["status", "priority", "module"] if c != cat_1])
         
-        # Filter Logic for Charts
         chart_df = df if val_1 == "All Data" else df[df[cat_1] == val_1]
         
-        # --- CHARTS ---
         g1, g2 = st.columns(2)
         with g1:
-            fig_pie = px.pie(chart_df, names=cat_2, hole=0.4, 
-                             title=f"Distribution of {cat_2.title()} ({val_1})",
-                             color_discrete_sequence=px.colors.qualitative.Dark24)
+            fig_pie = px.pie(chart_df, names=cat_2, hole=0.4, title=f"Distribution of {cat_2.title()}", color_discrete_sequence=px.colors.qualitative.Dark24)
             st.plotly_chart(fig_pie, use_container_width=True)
         with g2:
             bar_data = chart_df.groupby([cat_2]).size().reset_index(name='Count')
-            fig_bar = px.bar(bar_data, x=cat_2, y='Count', 
-                             title=f"Volume Count by {cat_2.title()}",
-                             color=cat_2, color_discrete_sequence=px.colors.qualitative.Bold)
+            fig_bar = px.bar(bar_data, x=cat_2, y='Count', title=f"Volume Count by {cat_2.title()}", color=cat_2, color_discrete_sequence=px.colors.qualitative.Bold)
             st.plotly_chart(fig_bar, use_container_width=True)
-    else:
-        st.info("Synchronizing with Supabase... Please ensure data exists in the 'public.defects' table.")
 
 with tab_explorer:
     st.subheader("Defect Registry")
-    st.caption("Double-click or click a row to open the Edit Pop-up Dialog.")
     
     # Global Search Feature
     search = st.text_input("🔍 Quick Search", placeholder="Search Titles, Reporters, or IDs...")
@@ -185,17 +170,18 @@ with tab_explorer:
     if search:
         disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
 
-    # Main Workspace Table with Selection
-    event = st.dataframe(
-        disp_df, 
-        use_container_width=True, 
-        hide_index=True, 
-        on_select="rerun", 
-        selection_mode="single"
-    )
-
-    # POP-UP TRIGGER: Check for selection event
-    if len(event.selection.rows) > 0:
-        selected_index = event.selection.rows[0]
-        selected_record = disp_df.iloc[selected_index]
-        edit_defect_dialog(selected_record)
+    # --- UPDATED EDIT TRIGGER FOR COMPATIBILITY ---
+    if not disp_df.empty:
+        st.dataframe(disp_df, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        st.markdown("### ✏️ Quick Edit")
+        # Instead of double-clicking the table, select the defect from this dropdown to edit
+        edit_id = st.selectbox("Select a Defect Summary to Edit:", ["Select..."] + disp_df['defect_title'].tolist())
+        
+        if edit_id != "Select...":
+            selected_record = disp_df[disp_df['defect_title'] == edit_id].iloc[0]
+            if st.button("Open Edit Pop-up"):
+                edit_defect_dialog(selected_record)
+    else:
+        st.info("No data found.")
