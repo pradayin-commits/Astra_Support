@@ -70,9 +70,7 @@ def load_history(defect_id):
 def create_defect_dialog():
     with st.form("create_form", clear_on_submit=True):
         st.write("### 📝 New Registration")
-        
         title_in = st.text_input("Summary *")
-        
         c1, c2, c3 = st.columns(3)
         mod_in = c1.selectbox("Module", MODULES)
         cat_in = c2.selectbox("Category", CATEGORIES)
@@ -86,41 +84,24 @@ def create_defect_dialog():
         desc_in = st.text_area("Initial Description")
         
         if st.form_submit_button("Submit to Astra", use_container_width=True):
-            clean_title = title_in.strip()
-            clean_name = name_in.strip()
-            clean_email = email_in.strip()
-            
-            if not clean_title:
-                st.error("❌ Summary is required.")
-            elif not clean_name:
-                st.error("❌ Reporter Name is required.")
-            elif not clean_email or "@" not in clean_email:
-                st.error("❌ Valid Reporter Email is required.")
+            t, n, e = title_in.strip(), name_in.strip(), email_in.strip()
+            if not t or not n or "@" not in e:
+                st.error("Validation Error: Please provide a valid Summary, Name, and Email.")
             else:
-                try:
-                    with get_engine().begin() as conn:
-                        conn.execute(text("""
-                            INSERT INTO public.defects 
-                            (defect_title, module, priority, category, environment, reported_by, reporter_email, description) 
-                            VALUES (:t, :m, :p, :c, :e, :rn, :re, :d)
-                        """), {
-                            "t": clean_title, "m": mod_in, "p": pri_in, 
-                            "c": cat_in, "e": env_in, "rn": clean_name, 
-                            "re": clean_email, "d": desc_in
-                        })
-                    st.cache_data.clear()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Database Error: {e}")
+                with get_engine().begin() as conn:
+                    conn.execute(text("""
+                        INSERT INTO public.defects (defect_title, module, priority, category, environment, reported_by, reporter_email, description) 
+                        VALUES (:t, :m, :p, :c, :e, :rn, :re, :d)
+                    """), {"t": t, "m": mod_in, "p": pri_in, "c": cat_in, "e": env_in, "rn": n, "re": e, "d": desc_in})
+                st.cache_data.clear()
+                st.rerun()
 
 @st.dialog("✏️ Modify Defect")
 def edit_defect_dialog(record):
     with st.form("edit_form"):
         st.markdown(f"### 📑 Record ID: {record['id']}")
-        
         new_title = st.text_input("Summary", value=record['defect_title'])
         c1, c2, c3 = st.columns(3)
-        
         old_status = record['status']
         new_status = c1.selectbox("Status", STATUSES, index=STATUSES.index(old_status) if old_status in STATUSES else 0)
         new_pri = c2.selectbox("Priority", PRIORITIES, index=PRIORITIES.index(record['priority']) if record['priority'] in PRIORITIES else 0)
@@ -180,7 +161,6 @@ if not df.empty:
 
 st.divider()
 
-# Tab Reordering: Defect Tracker is FIRST
 tab_tracker, tab_insights = st.tabs(["📂 Defect Tracker", "📊 Performance Insights"])
 
 with tab_tracker:
@@ -189,8 +169,8 @@ with tab_tracker:
         if st.button("➕ ADD NEW DEFECT", use_container_width=True):
             create_defect_dialog()
 
-    st.subheader("Defect Table")
-    search = st.text_input("🔍 Quick Filter", placeholder="Search by ID, Summary, Module, or Agent...")
+    st.subheader("Defect Tracker")
+    search = st.text_input("🔍 Quick Filter", placeholder="Search registry...")
     
     st.info("💡 **Instruction:** Click any **ID number** to modify the record or assign an agent.")
 
@@ -199,14 +179,29 @@ with tab_tracker:
         disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
     
     if not disp_df.empty:
-        # worksheet view without timestamps
+        # ALL FIELDS DISPLAYED - NO HIDDEN COUNT
+        # We explicitly list all columns and configure widths to ensure they fit.
         event = st.dataframe(
-            disp_df[['id', 'defect_title', 'module', 'priority', 'assigned_to', 'status']], 
+            disp_df[[
+                'id', 'defect_title', 'module', 'category', 'environment', 
+                'priority', 'reported_by', 'reporter_email', 'assigned_to', 'status'
+            ]], 
             use_container_width=True, 
             hide_index=True, 
             on_select="rerun", 
             selection_mode="single-row",
-            column_config={"id": st.column_config.LinkColumn("ID (Edit)")}
+            column_config={
+                "id": st.column_config.LinkColumn("ID", width="small"),
+                "defect_title": st.column_config.TextColumn("Summary", width="medium"),
+                "module": st.column_config.TextColumn("Module", width="small"),
+                "category": st.column_config.TextColumn("Category", width="small"),
+                "environment": st.column_config.TextColumn("Env", width="small"),
+                "priority": st.column_config.TextColumn("Priority", width="small"),
+                "reported_by": st.column_config.TextColumn("Reporter", width="small"),
+                "reporter_email": st.column_config.TextColumn("Email", width="medium"),
+                "assigned_to": st.column_config.TextColumn("Assigned To", width="small"),
+                "status": st.column_config.TextColumn("Status", width="small")
+            }
         )
 
         if event and event.selection.rows:
