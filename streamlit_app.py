@@ -53,19 +53,10 @@ def load_data():
     try:
         with get_engine().connect() as conn:
             df = pd.read_sql(text("SELECT * FROM public.defects ORDER BY created_at DESC"), conn)
-            
-            # --- AGGRESSIVE ID NORMALIZATION ---
-            # This looks for any variation of ID and renames it to 'id'
-            rename_map = {}
-            for col in df.columns:
-                if col.lower() in ['id', 'defect_id', 'pk']:
-                    rename_map[col] = 'id'
-            
-            if rename_map:
-                df = df.rename(columns=rename_map)
-            
-            # Convert all other columns to lowercase for consistency
+            # Normalize ID column
             df.columns = [c.lower() for c in df.columns]
+            if 'defect_id' in df.columns and 'id' not in df.columns:
+                df = df.rename(columns={'defect_id': 'id'})
             return df
     except Exception as e:
         st.error(f"DB Load Error: {e}")
@@ -74,26 +65,22 @@ def load_data():
 def load_one_defect(record_id):
     try:
         with get_engine().connect() as conn:
-            # We use text filtering to be safe with column names
             res = pd.read_sql(text("SELECT * FROM public.defects WHERE id = :id"), conn, params={"id": int(record_id)})
-            df = res
-            rename_map = {col: 'id' for col in df.columns if col.lower() in ['id', 'defect_id']}
-            df = df.rename(columns=rename_map)
-            df.columns = [c.lower() for c in df.columns]
-            return df.iloc[0].to_dict() if not df.empty else None
+            res.columns = [c.lower() for c in res.columns]
+            return res.iloc[0].to_dict() if not res.empty else None
     except:
         return None
 
 # ==========================================
-# 3. MODALS
+# 3. DIALOGS
 # ==========================================
 @st.dialog("➕ Register New Defect")
 def create_defect_dialog():
     with st.form("create_form", clear_on_submit=True):
         title = st.text_input("Summary *")
-        c1, col2 = st.columns(2)
+        c1, c2 = st.columns(2)
         mod = c1.selectbox("Module", MODULES)
-        pri = col2.selectbox("Priority", PRIORITIES)
+        pri = c2.selectbox("Priority", PRIORITIES)
         rep = st.text_input("Reported By *")
         desc = st.text_area("Detailed Description")
         
@@ -114,11 +101,10 @@ def create_defect_dialog():
 @st.dialog("✏️ Edit Defect")
 def edit_defect_dialog(record):
     with st.form("edit_form"):
-        st.markdown(f"**Editing Record ID: {record.get('id', 'Unknown')}**")
+        st.markdown(f"### Editing ID: {record['id']}")
         new_title = st.text_input("Summary", value=record.get('defect_title', ''))
         c1, c2 = st.columns(2)
         
-        # Safe selection logic
         cur_status = record.get('status', 'New')
         status_idx = STATUSES.index(cur_status) if cur_status in STATUSES else 0
         new_status = c1.selectbox("Status", STATUSES, index=status_idx)
@@ -129,7 +115,8 @@ def edit_defect_dialog(record):
         
         new_desc = st.text_area("Description", value=record.get('description', ''))
         
-        if st.form_submit_button("Save Changes", use_container_width=True):
+        col_s, col_c = st.columns(2)
+        if col_s.form_submit_button("Save Changes", use_container_width=True):
             with get_engine().begin() as conn:
                 conn.execute(text("""
                     UPDATE public.defects 
@@ -137,6 +124,11 @@ def edit_defect_dialog(record):
                     WHERE id=:id
                 """), {"t": new_title, "s": new_status, "p": new_pri, "d": new_desc, "u": dt.datetime.now(), "id": record['id']})
             st.cache_data.clear()
+            st.session_state.editing_id = None # Clear after save
+            st.rerun()
+        
+        if col_c.form_submit_button("Cancel", use_container_width=True):
+            st.session_state.editing_id = None
             st.rerun()
 
 # ==========================================
@@ -144,13 +136,9 @@ def edit_defect_dialog(record):
 # ==========================================
 df = load_data()
 
-# --- Sidebar Debug ---
-with st.sidebar:
-    st.write("### 🛠️ System Info")
-    if not df.empty:
-        st.write("Found Columns:", list(df.columns))
-    else:
-        st.warning("No Data Loaded")
+# Initialize Session State for Editing
+if 'editing_id' not in st.session_state:
+    st.session_state.editing_id = None
 
 st.title(f"🛡️ {APP_NAME}")
 
@@ -173,7 +161,6 @@ with tab_insights:
         cat_1 = d1.selectbox("1. Category", ["module", "priority", "status", "reported_by"])
         val_1 = d2.selectbox(f"2. {cat_1.title()} Value", ["All Data"] + sorted(df[cat_1].unique().tolist()))
         cat_2 = d3.selectbox("3. Pivot By", [c for c in ["status", "priority", "module"] if c in df.columns and c != cat_1])
-        
         c_df = df if val_1 == "All Data" else df[df[cat_1] == val_1]
         g1, g2 = st.columns(2)
         g1.plotly_chart(px.pie(c_df, names=cat_2, hole=0.4, title=f"{cat_2.title()} Dist."), use_container_width=True)
@@ -183,32 +170,29 @@ with tab_explorer:
     st.subheader("Defect Registry")
     search = st.text_input("🔍 Quick Search")
     
-    # Ensure ID column exists before filtering
-    if 'id' not in df.columns:
-        st.error("Missing 'id' column. Please check your Supabase table schema.")
-    else:
-        disp_df = df
-        if search:
-            disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
+    disp_df = df
+    if search:
+        disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
+    disp_df = disp_df.reset_index(drop=True)
 
-        # Reset index to ensure iloc alignment
-        disp_df = disp_df.reset_index(drop=True)
+    # DATAFRAME WITH SELECTION
+    event = st.dataframe(
+        disp_df, 
+        use_container_width=True, 
+        hide_index=True, 
+        on_select="rerun", 
+        selection_mode="single-row"
+    )
 
-        event = st.dataframe(
-            disp_df, 
-            use_container_width=True, 
-            hide_index=True, 
-            on_select="rerun", 
-            selection_mode="single-row"
-        )
+    # TRIGGER: If user selects a row, set the ID in session state
+    if event and event.selection.rows:
+        selected_row_idx = event.selection.rows[0]
+        st.session_state.editing_id = disp_df.at[selected_row_idx, 'id']
 
-        if event and event.selection.rows:
-            sel_row_idx = event.selection.rows[0]
-            try:
-                # Use .at or .loc for more robust access
-                rec_id = disp_df.at[sel_row_idx, 'id']
-                record = load_one_defect(rec_id)
-                if record:
-                    edit_defect_dialog(record)
-            except Exception as e:
-                st.error(f"Access Error: {e}")
+    # PERSISTENCE: If session state has an ID, show the dialog
+    if st.session_state.editing_id is not None:
+        record = load_one_defect(st.session_state.editing_id)
+        if record:
+            edit_defect_dialog(record)
+        else:
+            st.session_state.editing_id = None
