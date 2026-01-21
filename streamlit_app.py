@@ -3,10 +3,9 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
-import plotly.express as px
 
 # ==========================================
-# 1. BRANDING & BOSCH-STYLE UI
+# 1. BRANDING & UI DESIGN
 # ==========================================
 APP_NAME = "Astra Defect Tracker"
 st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
@@ -22,19 +21,17 @@ st.markdown("""
     .open-bucket { background: linear-gradient(135deg, #ea580c 0%, #fb923c 100%); }
     .resolved-bucket { background: linear-gradient(135deg, #166534 0%, #22c55e 100%); }
     
-    /* ADD NEW DEFECT BUTTON STYLE */
     div[data-testid="stButton"] > button {
         background-color: #064e3b !important;
         color: white !important;
         font-weight: 700 !important;
         height: 3.5rem !important;
-        width: 100% !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. DATABASE UTILITIES
+# 2. CORE UTILITIES
 # ==========================================
 MODULES = ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP", "BASIS", "OTHER"]
 PRIORITIES = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"]
@@ -56,16 +53,16 @@ def load_data():
             return df
     except: return pd.DataFrame()
 
-def load_status_history(defect_id):
+def load_history(defect_id):
     try:
         with get_engine().connect() as conn:
-            df = pd.read_sql(text("SELECT * FROM public.defect_history WHERE defect_id = :id ORDER BY changed_at DESC"),
+            df = pd.read_sql(text("SELECT * FROM public.defect_history WHERE defect_id = :id ORDER BY changed_at DESC"), 
                             conn, params={"id": int(defect_id)})
             return df
     except: return pd.DataFrame()
 
 # ==========================================
-# 3. INTERACTIVE DIALOGS
+# 3. DIALOGS
 # ==========================================
 @st.dialog("➕ Create New Defect")
 def create_defect_dialog():
@@ -75,18 +72,21 @@ def create_defect_dialog():
         c1, c2 = st.columns(2)
         mod = c1.selectbox("Module", MODULES)
         pri = c2.selectbox("Priority", PRIORITIES)
-        rep = st.text_input("Reported By *")
+        rep_name = st.text_input("Reported By (Name) *")
+        rep_email = st.text_input("Reporter Email *")
         desc = st.text_area("Description")
         
-        if st.form_submit_button("Submit to Astra"):
-            if not title or not rep:
-                st.error("Missing mandatory fields.")
+        if st.form_submit_button("Submit to Astra", use_container_width=True):
+            if not title or not rep_name or not rep_email:
+                st.error("Summary, Name, and Email are mandatory.")
+            elif "@" not in rep_email:
+                st.error("Invalid email address.")
             else:
                 with get_engine().begin() as conn:
                     conn.execute(text("""
-                        INSERT INTO public.defects (defect_title, module, priority, reported_by, description, status) 
-                        VALUES (:t, :m, :p, :r, :d, 'New')
-                    """), {"t": title, "m": mod, "p": pri, "r": rep, "d": desc})
+                        INSERT INTO public.defects (defect_title, module, priority, reported_by, reporter_email, description, status) 
+                        VALUES (:t, :m, :p, :rn, :re, :d, 'New')
+                    """), {"t": title, "m": mod, "p": pri, "rn": rep_name, "re": rep_email, "d": desc})
                 st.cache_data.clear()
                 st.rerun()
 
@@ -100,6 +100,8 @@ def edit_defect_dialog(record):
         old_status = record.get('status', 'New')
         new_status = c1.selectbox("Status", STATUSES, index=STATUSES.index(old_status) if old_status in STATUSES else 0)
         new_pri = c2.selectbox("Priority", PRIORITIES, index=PRIORITIES.index(record.get('priority', 'P3 - Medium')))
+        
+        st.text_input("Reporter Email", value=record.get('reporter_email', ''), disabled=True)
         new_desc = st.text_area("Description", value=record.get('description', ''))
         
         col_s, col_c = st.columns(2)
@@ -118,12 +120,12 @@ def edit_defect_dialog(record):
             st.rerun()
 
     st.divider()
-    st.write("#### 🕒 Status History")
-    hist = load_status_history(record['id'])
-    if not hist.empty:
-        st.dataframe(hist[['old_status', 'new_status', 'changed_at']], use_container_width=True, hide_index=True)
+    st.markdown("#### 🕒 Status History")
+    h_df = load_history(record['id'])
+    if not h_df.empty:
+        st.dataframe(h_df[['old_status', 'new_status', 'changed_at']], use_container_width=True, hide_index=True)
     else:
-        st.caption("No history available.")
+        st.caption("No history logged yet.")
 
 # ==========================================
 # 4. MAIN UI
@@ -133,48 +135,47 @@ if 'editing_id' not in st.session_state: st.session_state.editing_id = None
 
 st.title(f"🛡️ {APP_NAME}")
 
-# --- KPI BUCKETS ---
+# KPIs
 if not df.empty:
     k1, k2, k3 = st.columns(3)
     k1.markdown(f'<div class="metric-card global-bucket"><h3>Global</h3><h1>{len(df)}</h1></div>', unsafe_allow_html=True)
     k2.markdown(f'<div class="metric-card open-bucket"><h3>Active</h3><h1>{len(df[~df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
     k3.markdown(f'<div class="metric-card resolved-bucket"><h3>Resolved</h3><h1>{len(df[df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
 
-# --- ACCESSIBLE CREATE BUTTON ---
-c_btn, _ = st.columns([0.25, 0.75])
-with c_btn:
-    if st.button("➕ ADD NEW DEFECT"):
+# Accessible Button
+col_btn, _ = st.columns([0.2, 0.8])
+with col_btn:
+    if st.button("➕ ADD NEW DEFECT", use_container_width=True):
         create_defect_dialog()
 
 st.divider()
 
-tab_insights, tab_tracker = st.tabs(["📊 Performance Insights", "📂 Defect Tracker"])
-
-with tab_insights:
-    if not df.empty:
-        st.subheader("Analytical Drill-Down")
-        d1, d2, d3 = st.columns(3)
-        cat_1 = d1.selectbox("Filter By", ["module", "priority", "status"])
-        val_1 = d2.selectbox("Value", ["All Data"] + sorted(df[cat_1].unique().tolist()))
-        cat_2 = d3.selectbox("Pivot By", [c for c in ["status", "priority", "module"] if c != cat_1])
-        c_df = df if val_1 == "All Data" else df[df[cat_1] == val_1]
-        g1, g2 = st.columns(2)
-        g1.plotly_chart(px.pie(c_df, names=cat_2, hole=0.4, title="Distribution"), use_container_width=True)
-        g2.plotly_chart(px.bar(c_df.groupby(cat_2).size().reset_index(name='Cnt'), x=cat_2, y='Cnt', color=cat_2, title="Volume"), use_container_width=True)
+# TABS: Tracker is now first
+tab_tracker, tab_insights = st.tabs(["📂 Defect Tracker", "📊 Performance Insights"])
 
 with tab_tracker:
     st.subheader("Defect Table")
-    st.write("🔍 **Search Guidance:** Use the box below to filter the table by **ID, Summary, or Module**.")
-    search = st.text_input("Quick Search", placeholder="Filter registry...")
+    st.write("🔍 Search below for **ID, Summary, Module, or Email**. The table is live-filtered.")
+    search = st.text_input("Quick Search", placeholder="Type keywords...")
     
-    st.info("💡 **How to Edit:** Click the checkbox on the left of a row to open the **Modify** window.")
+    st.info("💡 **How to Edit:** Click on any **ID number** in the table to open the modification window.")
 
     disp_df = df
     if search:
         disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
     disp_df = disp_df.reset_index(drop=True)
 
-    event = st.dataframe(disp_df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+    # NO TIMESTAMPS IN TABLE
+    event = st.dataframe(
+        disp_df[['id', 'defect_title', 'module', 'priority', 'reported_by', 'reporter_email', 'status']], 
+        use_container_width=True, 
+        hide_index=True, 
+        on_select="rerun", 
+        selection_mode="single-row",
+        column_config={
+            "id": st.column_config.LinkColumn("ID (Click to Edit)", help="Click to open editor")
+        }
+    )
 
     if event and event.selection.rows:
         st.session_state.editing_id = disp_df.at[event.selection.rows[0], 'id']
