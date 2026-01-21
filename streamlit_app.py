@@ -35,7 +35,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. DATABASE CONFIGURATION
+# 2. DATABASE UTILITIES
 # ==========================================
 MODULES = ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP", "BASIS", "OTHER"]
 PRIORITIES = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"]
@@ -53,13 +53,9 @@ def load_data():
     try:
         with get_engine().connect() as conn:
             df = pd.read_sql(text("SELECT * FROM public.defects ORDER BY created_at DESC"), conn)
-            # Normalize ID column
             df.columns = [c.lower() for c in df.columns]
-            if 'defect_id' in df.columns and 'id' not in df.columns:
-                df = df.rename(columns={'defect_id': 'id'})
             return df
-    except Exception as e:
-        st.error(f"DB Load Error: {e}")
+    except:
         return pd.DataFrame()
 
 def load_one_defect(record_id):
@@ -72,7 +68,7 @@ def load_one_defect(record_id):
         return None
 
 # ==========================================
-# 3. DIALOGS
+# 3. INTERACTIVE DIALOGS
 # ==========================================
 @st.dialog("➕ Register New Defect")
 def create_defect_dialog():
@@ -86,45 +82,38 @@ def create_defect_dialog():
         
         if st.form_submit_button("Submit to Astra", use_container_width=True):
             if not title or not rep:
-                st.error("Summary and Reported By are required.")
+                st.error("Fields marked * are mandatory.")
             else:
-                now = dt.datetime.now()
-                new_rec = {"t": title, "m": mod, "p": pri, "r": rep, "d": desc, "s": "New", "now": now}
                 with get_engine().begin() as conn:
                     conn.execute(text("""
-                        INSERT INTO public.defects (defect_title, module, priority, reported_by, description, status, created_at, updated_at) 
-                        VALUES (:t, :m, :p, :r, :d, :s, :now, :now)
-                    """), new_rec)
+                        INSERT INTO public.defects (defect_title, module, priority, reported_by, description, status) 
+                        VALUES (:t, :m, :p, :r, :d, 'New')
+                    """), {"t": title, "m": mod, "p": pri, "r": rep, "d": desc})
                 st.cache_data.clear()
                 st.rerun()
 
 @st.dialog("✏️ Edit Defect")
 def edit_defect_dialog(record):
     with st.form("edit_form"):
-        st.markdown(f"### Editing ID: {record['id']}")
+        st.markdown(f"**Astra Record ID: {record['id']}**")
         new_title = st.text_input("Summary", value=record.get('defect_title', ''))
         c1, c2 = st.columns(2)
         
-        cur_status = record.get('status', 'New')
-        status_idx = STATUSES.index(cur_status) if cur_status in STATUSES else 0
-        new_status = c1.selectbox("Status", STATUSES, index=status_idx)
+        s_idx = STATUSES.index(record['status']) if record['status'] in STATUSES else 0
+        p_idx = PRIORITIES.index(record['priority']) if record['priority'] in PRIORITIES else 0
         
-        cur_pri = record.get('priority', 'P3 - Medium')
-        pri_idx = PRIORITIES.index(cur_pri) if cur_pri in PRIORITIES else 2
-        new_pri = c2.selectbox("Priority", PRIORITIES, index=pri_idx)
-        
+        new_status = c1.selectbox("Status", STATUSES, index=s_idx)
+        new_pri = c2.selectbox("Priority", PRIORITIES, index=p_idx)
         new_desc = st.text_area("Description", value=record.get('description', ''))
         
         col_s, col_c = st.columns(2)
         if col_s.form_submit_button("Save Changes", use_container_width=True):
             with get_engine().begin() as conn:
                 conn.execute(text("""
-                    UPDATE public.defects 
-                    SET defect_title=:t, status=:s, priority=:p, description=:d, updated_at=:u 
-                    WHERE id=:id
-                """), {"t": new_title, "s": new_status, "p": new_pri, "d": new_desc, "u": dt.datetime.now(), "id": record['id']})
+                    UPDATE public.defects SET defect_title=:t, status=:s, priority=:p, description=:d WHERE id=:id
+                """), {"t": new_title, "s": new_status, "p": new_pri, "d": new_desc, "id": record['id']})
             st.cache_data.clear()
-            st.session_state.editing_id = None # Clear after save
+            st.session_state.editing_id = None
             st.rerun()
         
         if col_c.form_submit_button("Cancel", use_container_width=True):
@@ -136,18 +125,19 @@ def edit_defect_dialog(record):
 # ==========================================
 df = load_data()
 
-# Initialize Session State for Editing
 if 'editing_id' not in st.session_state:
     st.session_state.editing_id = None
 
 st.title(f"🛡️ {APP_NAME}")
 
+# KPI Row
 if not df.empty:
     k1, k2, k3 = st.columns(3)
     k1.markdown(f'<div class="metric-card global-bucket"><h3>Global</h3><h1>{len(df)}</h1></div>', unsafe_allow_html=True)
     k2.markdown(f'<div class="metric-card open-bucket"><h3>Active</h3><h1>{len(df[~df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
     k3.markdown(f'<div class="metric-card resolved-bucket"><h3>Resolved</h3><h1>{len(df[df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
 
+# Create Button
 btn_col, _ = st.columns([0.2, 0.8])
 with btn_col:
     if st.button("➕ CREATE NEW DEFECT"):
@@ -163,19 +153,18 @@ with tab_insights:
         cat_2 = d3.selectbox("3. Pivot By", [c for c in ["status", "priority", "module"] if c in df.columns and c != cat_1])
         c_df = df if val_1 == "All Data" else df[df[cat_1] == val_1]
         g1, g2 = st.columns(2)
-        g1.plotly_chart(px.pie(c_df, names=cat_2, hole=0.4, title=f"{cat_2.title()} Dist."), use_container_width=True)
+        g1.plotly_chart(px.pie(c_df, names=cat_2, hole=0.4, title=f"{cat_2.title()} Distribution"), use_container_width=True)
         g2.plotly_chart(px.bar(c_df.groupby(cat_2).size().reset_index(name='Cnt'), x=cat_2, y='Cnt', color=cat_2, title="Volume"), use_container_width=True)
 
 with tab_explorer:
     st.subheader("Defect Registry")
-    search = st.text_input("🔍 Quick Search")
-    
+    search = st.text_input("🔍 Search Workspace")
     disp_df = df
     if search:
         disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
+    
     disp_df = disp_df.reset_index(drop=True)
 
-    # DATAFRAME WITH SELECTION
     event = st.dataframe(
         disp_df, 
         use_container_width=True, 
@@ -184,15 +173,11 @@ with tab_explorer:
         selection_mode="single-row"
     )
 
-    # TRIGGER: If user selects a row, set the ID in session state
     if event and event.selection.rows:
-        selected_row_idx = event.selection.rows[0]
-        st.session_state.editing_id = disp_df.at[selected_row_idx, 'id']
+        selected_idx = event.selection.rows[0]
+        st.session_state.editing_id = disp_df.at[selected_idx, 'id']
 
-    # PERSISTENCE: If session state has an ID, show the dialog
     if st.session_state.editing_id is not None:
-        record = load_one_defect(st.session_state.editing_id)
-        if record:
-            edit_defect_dialog(record)
-        else:
-            st.session_state.editing_id = None
+        rec = load_one_defect(st.session_state.editing_id)
+        if rec:
+            edit_defect_dialog(rec)
