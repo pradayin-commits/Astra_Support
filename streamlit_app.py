@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text
 import plotly.express as px
 
 # ==========================================
-# 1. BRANDING & UI DESIGN
+# 1. BRANDING & UI
 # ==========================================
 APP_NAME = "Astra Defect Tracker"
 st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
@@ -21,7 +21,6 @@ st.markdown("""
     .global-bucket { background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%); }
     .open-bucket { background: linear-gradient(135deg, #ea580c 0%, #fb923c 100%); }
     .resolved-bucket { background: linear-gradient(135deg, #166534 0%, #22c55e 100%); }
-    
     div[data-testid="stButton"] > button {
         background-color: #064e3b !important;
         color: white !important;
@@ -31,7 +30,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CORE UTILITIES
+# 2. DATABASE LOGIC
 # ==========================================
 MODULES = ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP", "BASIS", "OTHER"]
 PRIORITIES = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"]
@@ -49,6 +48,8 @@ def load_data():
     try:
         with get_engine().connect() as conn:
             df = pd.read_sql(text("SELECT id, defect_title, module, priority, reported_by, reporter_email, status, description FROM public.defects ORDER BY id DESC"), conn)
+            # CRITICAL FIX: Convert ID to string to prevent JS e.includes error
+            df['id'] = df['id'].astype(str)
             return df
     except: return pd.DataFrame()
 
@@ -104,10 +105,10 @@ def edit_defect_dialog(record):
         if col_s.form_submit_button("💾 Save Changes", use_container_width=True):
             with get_engine().begin() as conn:
                 conn.execute(text("UPDATE public.defects SET defect_title=:t, status=:s, priority=:p, description=:d WHERE id=:id"),
-                            {"t": new_title, "s": new_status, "p": new_pri, "d": new_desc, "id": record['id']})
+                            {"t": new_title, "s": new_status, "p": new_pri, "d": new_desc, "id": int(record['id'])})
                 if new_status != old_status:
                     conn.execute(text("INSERT INTO public.defect_history (defect_id, old_status, new_status, changed_by) VALUES (:id, :o, :n, :u)"),
-                                {"id": record['id'], "o": old_status, "n": new_status, "u": record['reported_by']})
+                                {"id": int(record['id']), "o": old_status, "n": new_status, "u": record['reported_by']})
             st.cache_data.clear()
             st.session_state.editing_id = None
             st.rerun()
@@ -142,7 +143,6 @@ st.divider()
 tab_tracker, tab_insights = st.tabs(["📂 Defect Tracker", "📊 Performance Insights"])
 
 with tab_tracker:
-    # ONE CLEAN HEADING FOR THE TRACKER SECTION
     st.header("Defect Tracker")
     
     # Action area
@@ -151,7 +151,6 @@ with tab_tracker:
         if st.button("➕ ADD NEW DEFECT", use_container_width=True):
             create_defect_dialog()
 
-    # Search area
     st.write("🔍 Search the table by **ID, Summary, Module, or Email**.")
     search = st.text_input("Quick Filter", label_visibility="collapsed", placeholder="Type keywords...")
     
@@ -162,19 +161,22 @@ with tab_tracker:
         disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
     
     if not disp_df.empty:
+        # LinkColumn requires strings!
         event = st.dataframe(
             disp_df[['id', 'defect_title', 'module', 'priority', 'reported_by', 'reporter_email', 'status']], 
             use_container_width=True, 
             hide_index=True, 
             on_select="rerun", 
             selection_mode="single-row",
-            column_config={"id": st.column_config.LinkColumn("ID")}
+            column_config={"id": st.column_config.LinkColumn("ID (Edit)")}
         )
 
         if event and event.selection.rows:
+            # Save selected ID to session state
             st.session_state.editing_id = disp_df.iloc[event.selection.rows[0]]['id']
 
         if st.session_state.editing_id:
+            # Fetch record for dialog
             rec = disp_df[disp_df['id'] == st.session_state.editing_id].iloc[0].to_dict()
             edit_defect_dialog(rec)
     else:
