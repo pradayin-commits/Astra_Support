@@ -57,21 +57,26 @@ def load_data():
             df['id'] = df['id'].astype(str)
             return df
     except Exception as e:
-        st.error(f"Database Error: {e}")
         return pd.DataFrame()
 
 # ==========================================
-# 3. SIDEBAR & SYNC
+# 3. SIDEBAR (PROFESSIONAL LABELS & SOP)
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ Controls")
+    st.header("⚙️ System Controls")
     if st.button("🔄 SYNC DATA NOW", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-    st.info("Pulls all 40+ entries from the database.")
+    st.info("Force a refresh to pull the latest records from the Astra database.")
+    
+    st.divider()
+    st.markdown("### 📖 Standard Operating Procedure")
+    st.write("**1. Registration:** Use '+ ADD NEW' to log a ticket.")
+    st.write("**2. Modification:** Click a row in the table to edit.")
+    st.write("**3. Assignment:** Select an Agent for workload tracking.")
 
 # ==========================================
-# 4. DIALOGS
+# 4. INTERACTIVE DIALOGS
 # ==========================================
 @st.dialog("➕ Create New Defect")
 def create_defect_dialog():
@@ -93,7 +98,7 @@ def create_defect_dialog():
         if st.form_submit_button("Submit to Astra", use_container_width=True):
             t, n, e = title_in.strip(), name_in.strip(), email_in.strip()
             if not t or not n or "@" not in e:
-                st.error("Missing required fields.")
+                st.error("Validation Error: Please provide valid Summary, Name, and Email.")
             else:
                 with get_engine().begin() as conn:
                     conn.execute(text("""
@@ -122,16 +127,21 @@ def edit_defect_dialog(record):
         
         col_s, col_c = st.columns(2)
         if col_s.form_submit_button("💾 Save Changes", use_container_width=True):
-            with get_engine().begin() as conn:
-                conn.execute(text("""
-                    UPDATE public.defects SET 
-                    defect_title=:t, status=:s, priority=:p, assigned_to=:a, 
-                    description=:d, comments=:c, updated_at=NOW() WHERE id=:id
-                """), {"t": new_title, "s": new_status, "p": new_pri, "a": new_assign, 
-                       "d": new_desc, "c": new_comm, "id": int(record['id'])})
-            st.cache_data.clear()
-            st.session_state.editing_id = None
-            st.rerun()
+            with st.spinner("Saving to database..."):
+                try:
+                    with get_engine().begin() as conn:
+                        conn.execute(text("""
+                            UPDATE public.defects SET 
+                            defect_title=:t, status=:s, priority=:p, assigned_to=:a, 
+                            description=:d, comments=:c, updated_at=NOW() WHERE id=:id
+                        """), {"t": new_title, "s": new_status, "p": new_pri, "a": new_assign, 
+                               "d": new_desc, "c": new_comm, "id": int(record['id'])})
+                    st.toast(f"✅ Record {record['id']} Updated!", icon="🛡️")
+                    st.cache_data.clear()
+                    st.session_state.editing_id = None
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Save Failed: {e}")
         if col_c.form_submit_button("✖️ Cancel", use_container_width=True):
             st.session_state.editing_id = None
             st.rerun()
@@ -149,18 +159,23 @@ if not df.empty:
     k1.markdown(f'<div class="metric-card global-bucket"><h3>Global Items</h3><h1>{len(df)}</h1></div>', unsafe_allow_html=True)
     k2.markdown(f'<div class="metric-card open-bucket"><h3>Active</h3><h1>{len(df[~df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
     k3.markdown(f'<div class="metric-card resolved-bucket"><h3>Resolved Total</h3><h1>{len(df[df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
+else:
+    st.info("Database is empty. Add a new defect to begin.")
 
 st.divider()
 
 tab_tracker, tab_insights = st.tabs(["📂 Defect Tracker", "📊 Performance Insights"])
 
 with tab_tracker:
+    st.subheader("Action Registry")
+    st.info("💡 **Instructions:** Click any row below to modify the record or assign an agent.")
+    
     if st.button("➕ ADD NEW DEFECT"):
         create_defect_dialog()
 
     search = st.text_input("🔍 Quick Filter", placeholder="Search registry...")
     disp_df = df
-    if search:
+    if search and not df.empty:
         disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
     
     if not disp_df.empty:
@@ -177,10 +192,9 @@ with tab_tracker:
 with tab_insights:
     st.header("📊 Performance Insights")
     if not df.empty:
-        # --- RESTORED 3-DROP-DOWN SYSTEM ---
+        # --- 3-DROP-DOWN ANALYSIS SYSTEM ---
         c1, c2, c3 = st.columns(3)
         dim_options = {"module": "Module", "priority": "Priority", "status": "Status", "category": "Category", "environment": "Env"}
-        
         primary_dim = c1.selectbox("1. Analysis Dimension", options=list(dim_options.keys()), format_func=lambda x: dim_options[x])
         unique_vals = sorted(df[primary_dim].unique().tolist())
         selected_val = c2.selectbox(f"2. Filter Specific {dim_options[primary_dim]}", options=["All Data"] + unique_vals)
@@ -189,7 +203,6 @@ with tab_insights:
         chart_df = df if selected_val == "All Data" else df[df[primary_dim] == selected_val]
         st.divider()
 
-        # Bar and Pie Charts for Volume/Distribution
         g1, g2 = st.columns(2)
         fig_bar = px.bar(chart_df.groupby(pivot_dim).size().reset_index(name='Count'), x=pivot_dim, y='Count', color=pivot_dim, title=f"Volume by {dim_options[pivot_dim]}")
         g1.plotly_chart(fig_bar, use_container_width=True)
@@ -197,10 +210,25 @@ with tab_insights:
         fig_pie = px.pie(chart_df, names=pivot_dim, hole=0.5, title=f"% Distribution of {dim_options[pivot_dim]}")
         g2.plotly_chart(fig_pie, use_container_width=True)
 
-        # Agent Workload
-        st.subheader("👤 Agent Workload")
-        agent_df = df.groupby('assigned_to').size().reset_index(name='Items').sort_values('Items', ascending=False)
-        fig_agent = px.bar(agent_df, x='Items', y='assigned_to', orientation='h', title="Workload Distribution", color='Items')
+        # --- ENHANCED AGENT WORKLOAD (STACKED + INTERNAL LABELS) ---
+        
+        st.subheader("👤 Agent Workload by Status")
+        agent_status_df = df.groupby(['assigned_to', 'status']).size().reset_index(name='Items')
+        
+        fig_agent = px.bar(
+            agent_status_df, 
+            x='Items', 
+            y='assigned_to', 
+            color='status', 
+            orientation='h', 
+            text_auto=True, # Added internal value labels
+            title="Workload Distribution & Progress Status",
+            color_discrete_map={
+                "New": "#3498db", "In Progress": "#f39c12", "Blocked": "#e74c3c", 
+                "Resolved": "#2ecc71", "Closed": "#95a5a6", "Reopened": "#9b59b6"
+            }
+        )
+        fig_agent.update_layout(barmode='stack', legend_title_text='Status Legend')
         st.plotly_chart(fig_agent, use_container_width=True)
     else:
         st.warning("No data for insights.")
