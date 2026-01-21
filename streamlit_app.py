@@ -27,13 +27,14 @@ st.markdown("""
     .metric-card h3 { margin: 0; font-size: 14px; opacity: 0.8; text-transform: uppercase; }
     .metric-card h1 { margin: 5px 0 0 0; font-size: 32px; font-weight: 800; }
 
-    /* Create Button Styling */
+    /* Action Button Styling */
     div[data-testid="stButton"] > button {
         background-color: #064e3b !important;
         color: #ffffff !important;
         border-radius: 4px !important;
         font-weight: 700 !important;
         border: none !important;
+        height: 3em !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -74,7 +75,7 @@ def load_one_defect(record_id):
 # ==========================================
 # 3. DIALOGS
 # ==========================================
-@st.dialog("➕ Create New Defect")
+@st.dialog("➕ Register New Defect")
 def create_defect_dialog():
     with st.form("create_form", clear_on_submit=True):
         st.write("**Mandatory Information**")
@@ -135,14 +136,22 @@ if 'editing_id' not in st.session_state:
 
 st.title(f"🛡️ {APP_NAME}")
 
-# KPI Row
+# --- HEADER SECTION (KPIs & ACCESSIBLE CREATE BUTTON) ---
 if not df.empty:
     k1, k2, k3 = st.columns(3)
     k1.markdown(f'<div class="metric-card global-bucket"><h3>Global Items</h3><h1>{len(df)}</h1></div>', unsafe_allow_html=True)
     k2.markdown(f'<div class="metric-card open-bucket"><h3>Active Items</h3><h1>{len(df[~df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
     k3.markdown(f'<div class="metric-card resolved-bucket"><h3>Resolved Total</h3><h1>{len(df[df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
 
-# Tabs
+# ACCESSIBLE CREATE BUTTON (Below Buckets)
+col_btn, _ = st.columns([0.25, 0.75])
+with col_btn:
+    if st.button("➕ ADD NEW DEFECT", use_container_width=True):
+        create_defect_dialog()
+
+st.divider()
+
+# --- TABS SECTION ---
 tab_insights, tab_tracker = st.tabs(["📊 Performance Insights", "📂 Defect Tracker"])
 
 with tab_insights:
@@ -160,17 +169,15 @@ with tab_insights:
 with tab_tracker:
     st.subheader("Defect Table")
     
-    # Action Row
-    c_btn, c_search = st.columns([0.25, 0.75])
-    with c_btn:
-        # THE CREATE BUTTON
-        if st.button("➕ CREATE NEW DEFECT", use_container_width=True):
-            create_defect_dialog()
-            
-    with c_search:
-        search = st.text_input("🔍 Search Defects", label_visibility="collapsed", placeholder="Filter by ID, Title, Reporter...")
+    # SEARCH GUIDANCE TEXT
+    st.markdown("""
+        🔍 **Searching & Filtering:** Use the search bar below to filter the registry by **ID, Summary, SAP Module, or Reporter**. 
+        The table will update in real-time as you type.
+    """)
+    
+    search = st.text_input("Quick Filter", placeholder="e.g., 'MM', 'P1', or 'John Doe'...")
 
-    st.info("💡 **Selection Instruction:** Click the checkbox on the left to open the **Modify Defect** window.")
+    st.info("💡 **How to Edit:** Click the circular checkbox on the left of any row to open the **Modify Defect** window.")
 
     disp_df = df
     if search:
