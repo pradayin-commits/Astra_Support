@@ -52,14 +52,19 @@ def get_engine():
 def load_data():
     try:
         with get_engine().connect() as conn:
-            return pd.read_sql(text("SELECT * FROM public.defects ORDER BY created_at DESC"), conn)
+            df = pd.read_sql(text("SELECT * FROM public.defects ORDER BY created_at DESC"), conn)
+            # FIX: Normalize column names to lowercase to prevent KeyError
+            df.columns = [c.lower() for c in df.columns]
+            return df
     except:
         return pd.DataFrame()
 
 def load_one_defect(record_id):
     try:
         with get_engine().connect() as conn:
+            # We use lowercase 'id' here as well
             res = pd.read_sql(text("SELECT * FROM public.defects WHERE id = :id"), conn, params={"id": int(record_id)})
+            res.columns = [c.lower() for c in res.columns]
             return res.iloc[0].to_dict() if not res.empty else None
     except:
         return None
@@ -71,9 +76,9 @@ def load_one_defect(record_id):
 def create_defect_dialog():
     with st.form("create_form", clear_on_submit=True):
         title = st.text_input("Summary *")
-        col1, col2 = st.columns(2)
-        mod = col1.selectbox("Module", MODULES)
-        pri = col2.selectbox("Priority", PRIORITIES)
+        c1, c2 = st.columns(2)
+        mod = c1.selectbox("Module", MODULES)
+        pri = c2.selectbox("Priority", PRIORITIES)
         rep = st.text_input("Reported By *")
         desc = st.text_area("Detailed Description")
         
@@ -81,7 +86,6 @@ def create_defect_dialog():
             if not title or not rep:
                 st.error("Summary and Reported By are required.")
             else:
-                # NOTICE: We do NOT send an 'id' here. Postgres assigns it.
                 new_rec = {"t": title, "m": mod, "p": pri, "r": rep, "d": desc, "s": "New", "now": dt.datetime.now()}
                 with get_engine().begin() as conn:
                     conn.execute(text("""
@@ -155,7 +159,11 @@ with tab_explorer:
 
     if event and event.selection.rows:
         sel_row = event.selection.rows[0]
-        rec_id = disp_df.iloc[sel_row]['id']
-        record = load_one_defect(rec_id)
-        if record:
-            edit_defect_dialog(record)
+        # Ensure we use .iloc[sel_row] safely
+        try:
+            rec_id = disp_df.iloc[sel_row]['id']
+            record = load_one_defect(rec_id)
+            if record:
+                edit_defect_dialog(record)
+        except Exception as e:
+            st.error(f"Selection Error: {e}")
