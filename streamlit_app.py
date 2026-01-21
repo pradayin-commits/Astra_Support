@@ -39,6 +39,8 @@ PRIORITIES = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"]
 STATUSES = ["New", "In Progress", "Blocked", "Resolved", "Closed", "Reopened"]
 CATEGORIES = ["Functional", "UI/UX", "Data", "Security", "Performance"]
 ENVS = ["Production", "UAT", "QA", "Development"]
+# Added standard Agent list for the dropdown
+AGENTS = ["Unassigned", "Sarah Jenkins", "David Chen", "Maria Garcia", "Kevin Lee"]
 
 @st.cache_resource
 def get_engine():
@@ -52,7 +54,7 @@ def load_data():
     try:
         with get_engine().connect() as conn:
             df = pd.read_sql(text("SELECT * FROM public.defects ORDER BY id DESC"), conn)
-            df['id'] = df['id'].astype(str) # For LinkColumn
+            df['id'] = df['id'].astype(str)
             return df
     except: return pd.DataFrame()
 
@@ -83,6 +85,7 @@ def create_defect_dialog():
         email_in = st.text_input("Reporter Email *")
         desc_in = st.text_area("Initial Description")
         
+        # Unified Submit Button
         if st.form_submit_button("Submit to Astra", use_container_width=True):
             t, n, e = title_in.strip(), name_in.strip(), email_in.strip()
             if not t or not n or "@" not in e:
@@ -90,8 +93,8 @@ def create_defect_dialog():
             else:
                 with get_engine().begin() as conn:
                     conn.execute(text("""
-                        INSERT INTO public.defects (defect_title, module, priority, category, environment, reported_by, reporter_email, description) 
-                        VALUES (:t, :m, :p, :c, :e, :rn, :re, :d)
+                        INSERT INTO public.defects (defect_title, module, priority, category, environment, reported_by, reporter_email, description, status, assigned_to) 
+                        VALUES (:t, :m, :p, :c, :e, :rn, :re, :d, 'New', 'Unassigned')
                     """), {"t": t, "m": mod_in, "p": pri_in, "c": cat_in, "e": env_in, "rn": n, "re": e, "d": desc_in})
                 st.cache_data.clear()
                 st.rerun()
@@ -105,21 +108,26 @@ def edit_defect_dialog(record):
         old_status = record['status']
         new_status = c1.selectbox("Status", STATUSES, index=STATUSES.index(old_status) if old_status in STATUSES else 0)
         new_pri = c2.selectbox("Priority", PRIORITIES, index=PRIORITIES.index(record['priority']) if record['priority'] in PRIORITIES else 0)
-        new_assign = c3.text_input("Assigned To Agent", value=record.get('assigned_to', 'Unassigned'))
+        
+        # Changed text input to Selectbox for cleaner chart data
+        current_agent = record.get('assigned_to', 'Unassigned')
+        new_assign = c3.selectbox("Assigned To Agent", options=AGENTS, index=AGENTS.index(current_agent) if current_agent in AGENTS else 0)
         
         st.write("---")
         new_desc = st.text_area("Description", value=record['description'])
         new_comm = st.text_area("Comments", value=record.get('comments', ''))
         new_res = st.text_area("Resolution Notes", value=record.get('resolution_notes', ''))
         
+        # Metadata section - kept for reference but disabled
         st.write("---")
         st.markdown("**🛡️ System Metadata**")
-        d1, d2, d3 = st.columns(3)
+        d1, d2 = st.columns(2)
         d1.text_input("Created", value=str(record['created_at'])[:16], disabled=True)
         d2.text_input("Last Update", value=str(record['updated_at'])[:16], disabled=True)
-        d3.text_input("Resolved", value=str(record['resolved_at'])[:16] if record['resolved_at'] else "N/A", disabled=True)
 
         col_s, col_c = st.columns(2)
+        # REMOVED: Redundant "Update to Astra" button. 
+        # "Save Changes" now handles the single source of truth update.
         if col_s.form_submit_button("💾 Save Changes", use_container_width=True):
             res_date = dt.datetime.now() if new_status in ["Resolved", "Closed"] else record['resolved_at']
             with get_engine().begin() as conn:
@@ -172,19 +180,19 @@ with tab_tracker:
 
     st.subheader("Defect Table")
     search = st.text_input("🔍 Quick Filter", placeholder="Search registry...")
-    st.info("💡 **Instruction:** Click any **ID number** to modify the record or assign an agent.")
+    st.info("💡 **Instruction:** Click any row to modify the record or assign an agent.")
 
     disp_df = df
     if search:
         disp_df = df[df.apply(lambda r: search.lower() in r.astype(str).str.lower().values, axis=1)]
     
     if not disp_df.empty:
-        # Full field display to avoid hidden count
+        # DISPLAY: Simplified columns for the user view (No timestamps here)
         event = st.dataframe(
             disp_df[['id', 'defect_title', 'module', 'category', 'environment', 'priority', 'reported_by', 'reporter_email', 'assigned_to', 'status']], 
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row",
             column_config={
-                "id": st.column_config.LinkColumn("ID", width="small"),
+                "id": st.column_config.TextColumn("ID", width="small"),
                 "defect_title": st.column_config.TextColumn("Summary", width="medium"),
                 "reporter_email": st.column_config.TextColumn("Email", width="medium")
             }
@@ -200,7 +208,6 @@ with tab_tracker:
 with tab_insights:
     st.header("📊 Performance Insights")
     if not df.empty:
-        # --- THE 3-DROP-DOWN DIAGNOSTIC SYSTEM ---
         c1, c2, c3 = st.columns(3)
         dim_options = {"module": "Module", "priority": "Priority", "status": "Status", "category": "Category", "environment": "Env"}
         
@@ -212,7 +219,6 @@ with tab_insights:
         chart_df = df if selected_val == "All Data" else df[df[primary_dim] == selected_val]
         st.divider()
 
-        # --- 3-CHART LAYOUT ---
         g1, g2 = st.columns(2)
         fig_bar = px.bar(chart_df.groupby(pivot_dim).size().reset_index(name='Count'), x=pivot_dim, y='Count', color=pivot_dim, title=f"Volume by {dim_options[pivot_dim]}", template="plotly_white")
         g1.plotly_chart(fig_bar, use_container_width=True)
@@ -220,9 +226,20 @@ with tab_insights:
         fig_pie = px.pie(chart_df, names=pivot_dim, hole=0.5, title=f"% Distribution of {dim_options[pivot_dim]}")
         g2.plotly_chart(fig_pie, use_container_width=True)
 
+        # FIXED AGENT WORKLOAD LOGIC
         st.subheader("👤 Agent Workload")
+        # Filters specifically for the assigned_to agent column
         agent_df = chart_df.groupby('assigned_to').size().reset_index(name='Items').sort_values('Items', ascending=False)
-        fig_agent = px.bar(agent_df, x='Items', y='assigned_to', orientation='h', title="Workload Distribution", color='Items', color_continuous_scale='Blues')
+        fig_agent = px.bar(
+            agent_df, 
+            x='Items', 
+            y='assigned_to', 
+            orientation='h', 
+            title="Workload Distribution (Active & Unassigned)", 
+            color='Items', 
+            color_continuous_scale='Blues',
+            labels={'assigned_to': 'Agent Name', 'Items': 'Number of Defects'}
+        )
         st.plotly_chart(fig_agent, use_container_width=True)
     else:
         st.warning("No data found for insights.")
