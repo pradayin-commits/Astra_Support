@@ -44,7 +44,6 @@ DISPLAY_COLS = [
     "id", "defect_title", "module", "category", "environment", "priority",
     "reported_by", "reporter_email", "assigned_to", "status"
 ]
-
 REQUIRED_COLS = set(DISPLAY_COLS + ["description", "comments"])
 
 def _get_db_url() -> str:
@@ -87,13 +86,15 @@ def load_data() -> pd.DataFrame:
         st.warning(f"Could not load data from DB: {e}")
         return pd.DataFrame(columns=list(REQUIRED_COLS))
 
+# ✅ FIXED SEARCH (literal match, not regex)
 def fast_search(df: pd.DataFrame, q: str) -> pd.DataFrame:
     q = (q or "").strip().lower()
     if not q or df.empty:
         return df
     cols = [c for c in DISPLAY_COLS if c in df.columns]
     haystack = df[cols].astype(str).agg(" | ".join, axis=1).str.lower()
-    return df[haystack.str.contains(q, na=False)]
+    # IMPORTANT: regex=False makes search literal and stable
+    return df[haystack.str.contains(q, na=False, regex=False)]
 
 # ==========================================
 # 3. SIDEBAR
@@ -194,7 +195,6 @@ def edit_defect_dialog(record: dict):
         new_desc = st.text_area("Description", value=str(record.get("description", "")))
         new_comm = st.text_area("Comments", value=str(record.get("comments", "")))
 
-        # IMPORTANT FIX: Use plain st.form_submit_button with unique keys
         b1, b2 = st.columns(2)
         save_clicked = b1.form_submit_button("💾 Save Changes", use_container_width=True, key="save_btn")
         cancel_clicked = b2.form_submit_button("✖️ Cancel", use_container_width=True, key="cancel_btn")
@@ -273,7 +273,6 @@ with tab_tracker:
     disp_df = fast_search(df, search)
 
     if not disp_df.empty:
-        # Display table
         event = st.dataframe(
             disp_df[[c for c in DISPLAY_COLS if c in disp_df.columns]],
             use_container_width=True,
@@ -286,17 +285,14 @@ with tab_tracker:
             }
         )
 
-        # Handle selection robustly
         if event and getattr(event, "selection", None) and event.selection.rows:
             selected_row = event.selection.rows[0]
             selected_id = disp_df.iloc[selected_row]["id"]
             st.session_state.editing_id = selected_id
             st.rerun()
-
     else:
         st.warning("No matching records found.")
 
-    # IMPORTANT FIX: Open dialog based on session state (survives reruns)
     if st.session_state.editing_id and not df.empty:
         rec = df[df["id"] == st.session_state.editing_id]
         if not rec.empty:
@@ -360,7 +356,7 @@ with tab_insights:
             text_auto=True,
             title="Workload Distribution & Progress Status",
         )
-        fig_agent.update_layout(barmode="stack", legend_title_text="Status Legend")
+        fig_agent.update_layout(barmode="stack', legend_title_text="Status Legend")
         st.plotly_chart(fig_agent, use_container_width=True)
     else:
         st.warning("No data for insights.")
