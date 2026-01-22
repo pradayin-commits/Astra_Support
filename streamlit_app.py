@@ -14,7 +14,7 @@ st.markdown("""
     <style>
     .stApp { background-color: #f0f2f6; }
 
-    .metric-card{
+    .metric-card {
         border-radius: 12px; padding: 20px; color: white; margin-bottom: 15px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.15);
     }
@@ -29,7 +29,7 @@ st.markdown("""
         border-radius: 6px !important;
     }
 
-    /* ✅ Search styling (light red background + clear border) */
+    /* ✅ Search styling (light red) */
     .search-wrap div[data-testid="stTextInput"] input{
         background: #ffecec !important;
         border: 1px solid #ff6b6b !important;
@@ -38,7 +38,7 @@ st.markdown("""
         font-weight: 600 !important;
     }
     .search-wrap div[data-testid="stTextInput"] input::placeholder{
-        color: rgba(120,0,0,0.45) !important; /* dim red hint */
+        color: rgba(120,0,0,0.45) !important;
         font-weight: 600 !important;
     }
     </style>
@@ -73,6 +73,9 @@ def get_engine():
 
 @st.cache_data(ttl=60)
 def load_data():
+    """
+    Loads records and builds a precomputed __search column so search-as-you-type is fast.
+    """
     try:
         with get_engine().connect() as conn:
             df = pd.read_sql(text("SELECT * FROM public.defects ORDER BY id DESC"), conn)
@@ -80,28 +83,34 @@ def load_data():
         if df.empty:
             return df
 
-        # Ensure required columns exist and safe
+        # Ensure required columns exist + fillna
         for c in REQUIRED_COLS:
             if c not in df.columns:
                 df[c] = ""
             df[c] = df[c].fillna("")
 
-        # Normalize id to string for stable matching
+        # Normalize id (string in UI; still numeric in DB)
         df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64").astype(str)
+
+        # ✅ Precompute a searchable string once (FAST filtering on every keystroke)
+        cols = [c for c in DISPLAY_COLS if c in df.columns]
+        df["__search"] = df[cols].astype(str).agg(" | ".join, axis=1).str.lower()
 
         return df
     except Exception as e:
         st.warning(f"Could not load data from DB: {e}")
         return pd.DataFrame(columns=list(REQUIRED_COLS))
 
-# ✅ Stable literal search (no regex surprises)
 def fast_search(df: pd.DataFrame, q: str) -> pd.DataFrame:
+    """
+    Search-as-you-type, literal match, no regex surprises.
+    """
     q = (q or "").strip().lower()
     if not q or df.empty:
         return df
-    cols = [c for c in DISPLAY_COLS if c in df.columns]
-    haystack = df[cols].astype(str).agg(" | ".join, axis=1).str.lower()
-    return df[haystack.str.contains(q, na=False, regex=False)]
+    if "__search" not in df.columns:
+        return df
+    return df[df["__search"].str.contains(q, na=False, regex=False)]
 
 # ==========================================
 # 3. SIDEBAR
@@ -125,12 +134,8 @@ with st.sidebar:
 if "editing_id" not in st.session_state:
     st.session_state.editing_id = None
 
-# ✅ Search should NOT run while typing
-if "applied_search" not in st.session_state:
-    st.session_state.applied_search = ""
-
 # ==========================================
-# 5. DIALOGS
+# 5. INTERACTIVE DIALOGS
 # ==========================================
 @st.dialog("➕ Create New Defect")
 def create_defect_dialog():
@@ -224,6 +229,7 @@ def edit_defect_dialog(record: dict):
 # 6. MAIN UI
 # ==========================================
 df = load_data()
+
 st.title(f"🛡️ {APP_NAME}")
 
 if not df.empty:
@@ -245,60 +251,39 @@ with tab_tracker:
     if st.button("➕ ADD NEW DEFECT"):
         create_defect_dialog()
 
-    # ✅ Submit-only search: no rerun/filter while typing
+    # ✅ Search-as-you-type (NO buttons), styled light red
     st.markdown('<div class="search-wrap">', unsafe_allow_html=True)
-    with st.form("search_form", clear_on_submit=False):
-        c1, c2 = st.columns([4, 1])
-        typed = c1.text_input(
-            "🔍 Quick Filter",
-            value=st.session_state.applied_search,
-            placeholder="Type to search… then press Search (no auto-filter while typing)",
-            label_visibility="visible",
-        )
-        do_search = c2.form_submit_button("Search", use_container_width=True)
-        clear = st.form_submit_button("Clear Search", use_container_width=True)
-
-        if do_search:
-            st.session_state.applied_search = typed
-        if clear:
-            st.session_state.applied_search = ""
-            st.rerun()
+    search = st.text_input(
+        "🔍 Quick Filter",
+        placeholder="Type to search… (auto filters as you type)",
+        key="search_text"
+    )
     st.markdown('</div>', unsafe_allow_html=True)
 
-    disp_df = fast_search(df, st.session_state.applied_search)
+    disp_df = fast_search(df, search)
 
     if not disp_df.empty:
-        # ✅ Ensure Status is included and visible
+        # ✅ Make sure status is visible
         table_cols = [c for c in DISPLAY_COLS if c in disp_df.columns]
 
         event = st.dataframe(
             disp_df[table_cols],
             use_container_width=True,
             hide_index=True,
-            on_select="rerun",
             selection_mode="single-row",
-            column_config={
-                "id": st.column_config.TextColumn("ID"),
-                "defect_title": st.column_config.TextColumn("Summary"),
-                "status": st.column_config.TextColumn("Status"),
-            }
+            on_select="ignore",   # ✅ IMPORTANT: do NOT force rerun; open modal immediately
+            key="defect_table"
         )
 
+        # ✅ OPEN MODAL IMMEDIATELY ON FIRST CLICK (no rerun dependency)
         if event and getattr(event, "selection", None) and event.selection.rows:
             selected_row = event.selection.rows[0]
-            selected_id = disp_df.iloc[selected_row]["id"]
-            st.session_state.editing_id = selected_id
-            st.rerun()
+            rec = disp_df.iloc[selected_row].to_dict()
+            st.session_state.editing_id = rec.get("id")
+            edit_defect_dialog(rec)
+
     else:
         st.warning("No matching records found.")
-
-    # Stable dialog open
-    if st.session_state.editing_id and not df.empty:
-        rec = df[df["id"] == st.session_state.editing_id]
-        if not rec.empty:
-            edit_defect_dialog(rec.iloc[0].to_dict())
-        else:
-            st.session_state.editing_id = None
 
 with tab_insights:
     st.header("📊 Performance Insights")
@@ -314,13 +299,13 @@ with tab_insights:
         st.divider()
 
         g1, g2 = st.columns(2)
-        fig_bar = px.bar(chart_df.groupby(pivot_dim).size().reset_index(name='Count'),
-                         x=pivot_dim, y='Count', color=pivot_dim,
-                         title=f"Volume by {dim_options[pivot_dim]}")
+        fig_bar = px.bar(
+            chart_df.groupby(pivot_dim).size().reset_index(name='Count'),
+            x=pivot_dim, y='Count', color=pivot_dim, title=f"Volume by {dim_options[pivot_dim]}"
+        )
         g1.plotly_chart(fig_bar, use_container_width=True)
 
-        fig_pie = px.pie(chart_df, names=pivot_dim, hole=0.5,
-                         title=f"% Distribution of {dim_options[pivot_dim]}")
+        fig_pie = px.pie(chart_df, names=pivot_dim, hole=0.5, title=f"% Distribution of {dim_options[pivot_dim]}")
         g2.plotly_chart(fig_pie, use_container_width=True)
 
         st.subheader("👤 Agent Workload by Status")
