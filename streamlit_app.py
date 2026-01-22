@@ -11,27 +11,41 @@ APP_NAME = "Astra Defect Tracker"
 st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
 
 st.markdown("""
-<style>
-.stApp { background-color: #f0f2f6; }
-.metric-card {
-    border-radius: 12px; padding: 20px; color: white; margin-bottom: 15px;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.15);
-}
-.global-bucket { background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%); }
-.open-bucket { background: linear-gradient(135deg, #ea580c 0%, #fb923c 100%); }
-.resolved-bucket { background: linear-gradient(135deg, #166534 0%, #22c55e 100%); }
+    <style>
+    .stApp { background-color: #f0f2f6; }
 
-div[data-testid="stButton"] > button {
-    background-color: #064e3b !important;
-    color: white !important;
-    font-weight: 700 !important;
-    border-radius: 4px !important;
-}
-</style>
+    .metric-card{
+        border-radius: 12px; padding: 20px; color: white; margin-bottom: 15px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.15);
+    }
+    .global-bucket { background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%); }
+    .open-bucket { background: linear-gradient(135deg, #ea580c 0%, #fb923c 100%); }
+    .resolved-bucket { background: linear-gradient(135deg, #166534 0%, #22c55e 100%); }
+
+    div[data-testid="stButton"] > button {
+        background-color: #064e3b !important;
+        color: white !important;
+        font-weight: 700 !important;
+        border-radius: 6px !important;
+    }
+
+    /* ✅ Search styling (light red background + clear border) */
+    .search-wrap div[data-testid="stTextInput"] input{
+        background: #ffecec !important;
+        border: 1px solid #ff6b6b !important;
+        border-radius: 10px !important;
+        padding: 10px 12px !important;
+        font-weight: 600 !important;
+    }
+    .search-wrap div[data-testid="stTextInput"] input::placeholder{
+        color: rgba(120,0,0,0.45) !important; /* dim red hint */
+        font-weight: 600 !important;
+    }
+    </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CONSTANTS
+# 2. CONSTANTS & UTILITIES
 # ==========================================
 MODULES = ["PLM", "PP", "FI", "SD", "MM", "QM", "ABAP", "BASIS", "OTHER"]
 PRIORITIES = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"]
@@ -41,186 +55,291 @@ ENVS = ["Production", "UAT", "QA", "Development"]
 AGENTS = ["Unassigned", "Sarah Jenkins", "David Chen", "Maria Garcia", "Kevin Lee"]
 
 DISPLAY_COLS = [
-    "id", "defect_title", "module", "category", "environment",
-    "priority", "reported_by", "reporter_email", "assigned_to", "status"
+    "id", "defect_title", "module", "category", "environment", "priority",
+    "reported_by", "reporter_email", "assigned_to", "status"
 ]
-
 REQUIRED_COLS = set(DISPLAY_COLS + ["description", "comments"])
-
-# ==========================================
-# 3. DATABASE
-# ==========================================
-def get_db_url():
-    url = st.secrets.get("SUPABASE_DATABASE_URL") if hasattr(st, "secrets") else None
-    url = url or os.getenv("SUPABASE_DATABASE_URL")
-    if not url:
-        st.error("SUPABASE_DATABASE_URL not found")
-        st.stop()
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
-    return url
 
 @st.cache_resource
 def get_engine():
-    return create_engine(get_db_url(), pool_pre_ping=True)
+    db_url = st.secrets.get("SUPABASE_DATABASE_URL") if hasattr(st, "secrets") else None
+    db_url = db_url or os.getenv("SUPABASE_DATABASE_URL")
+    if not db_url:
+        st.error("Missing SUPABASE_DATABASE_URL in Streamlit secrets or environment variables.")
+        st.stop()
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    return create_engine(db_url, pool_pre_ping=True)
 
 @st.cache_data(ttl=60)
 def load_data():
     try:
         with get_engine().connect() as conn:
-            df = pd.read_sql("SELECT * FROM public.defects ORDER BY id DESC", conn)
+            df = pd.read_sql(text("SELECT * FROM public.defects ORDER BY id DESC"), conn)
 
-        for col in REQUIRED_COLS:
-            if col not in df.columns:
-                df[col] = ""
-            df[col] = df[col].fillna("")
+        if df.empty:
+            return df
 
+        # Ensure required columns exist and safe
+        for c in REQUIRED_COLS:
+            if c not in df.columns:
+                df[c] = ""
+            df[c] = df[c].fillna("")
+
+        # Normalize id to string for stable matching
         df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64").astype(str)
+
         return df
     except Exception as e:
-        st.warning(e)
+        st.warning(f"Could not load data from DB: {e}")
         return pd.DataFrame(columns=list(REQUIRED_COLS))
 
-# ==========================================
-# 4. SEARCH (FIXED)
-# ==========================================
-def fast_search(df, q):
+# ✅ Stable literal search (no regex surprises)
+def fast_search(df: pd.DataFrame, q: str) -> pd.DataFrame:
     q = (q or "").strip().lower()
     if not q or df.empty:
         return df
     cols = [c for c in DISPLAY_COLS if c in df.columns]
     haystack = df[cols].astype(str).agg(" | ".join, axis=1).str.lower()
-    return df[haystack.str.contains(q, regex=False, na=False)]
+    return df[haystack.str.contains(q, na=False, regex=False)]
 
 # ==========================================
-# 5. SIDEBAR
+# 3. SIDEBAR
 # ==========================================
 with st.sidebar:
     st.header("⚙️ System Controls")
     if st.button("🔄 SYNC DATA NOW", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+    st.info("Force a refresh to pull the latest records from the Astra database.")
+
     st.divider()
-    st.markdown("### 📖 SOP")
-    st.write("1. Add defect")
-    st.write("2. Click row to edit")
-    st.write("3. Assign agent")
+    st.markdown("### 📖 Standard Operating Procedure")
+    st.write("**1. Registration:** Use '+ ADD NEW' to log a ticket.")
+    st.write("**2. Modification:** Click a row in the table to edit.")
+    st.write("**3. Assignment:** Select an Agent for workload tracking.")
 
 # ==========================================
-# 6. SESSION STATE
+# 4. SESSION STATE
 # ==========================================
 if "editing_id" not in st.session_state:
     st.session_state.editing_id = None
 
+# ✅ Search should NOT run while typing
+if "applied_search" not in st.session_state:
+    st.session_state.applied_search = ""
+
 # ==========================================
-# 7. DIALOGS
+# 5. DIALOGS
 # ==========================================
 @st.dialog("➕ Create New Defect")
 def create_defect_dialog():
-    with st.form("create_form"):
-        title = st.text_input("Summary *")
-        module = st.selectbox("Module", MODULES)
-        category = st.selectbox("Category", CATEGORIES)
-        env = st.selectbox("Environment", ENVS)
-        priority = st.selectbox("Priority", PRIORITIES)
-        reporter = st.text_input("Reporter Name *")
-        email = st.text_input("Reporter Email *")
-        desc = st.text_area("Description")
+    with st.form("create_form", clear_on_submit=True):
+        st.write("### 📝 New Registration")
+        title_in = st.text_input("Summary *")
+        c1, c2, c3 = st.columns(3)
+        mod_in = c1.selectbox("Module", MODULES)
+        cat_in = c2.selectbox("Category", CATEGORIES)
+        env_in = c3.selectbox("Environment", ENVS)
 
-        if st.form_submit_button("Submit"):
-            if not title or not reporter or "@" not in email:
-                st.error("Invalid input")
+        c4, c5 = st.columns(2)
+        pri_in = c4.selectbox("Priority", PRIORITIES)
+        name_in = c5.text_input("Reporter Name *")
+
+        email_in = st.text_input("Reporter Email *")
+        desc_in = st.text_area("Initial Description")
+
+        if st.form_submit_button("Submit to Astra", use_container_width=True):
+            t, n, e = (title_in or "").strip(), (name_in or "").strip(), (email_in or "").strip()
+            if not t or not n or "@" not in e:
+                st.error("Validation Error: Please provide valid Summary, Name, and Email.")
                 return
+
             with get_engine().begin() as conn:
                 conn.execute(text("""
                     INSERT INTO public.defects
-                    (defect_title, module, category, environment, priority,
+                    (defect_title, module, priority, category, environment,
                      reported_by, reporter_email, description, status, assigned_to)
-                    VALUES
-                    (:t,:m,:c,:e,:p,:r,:re,:d,'New','Unassigned')
-                """), dict(
-                    t=title, m=module, c=category, e=env,
-                    p=priority, r=reporter, re=email, d=desc
-                ))
+                    VALUES (:t, :m, :p, :c, :env, :rn, :re, :d, 'New', 'Unassigned')
+                """), {"t": t, "m": mod_in, "p": pri_in, "c": cat_in, "env": env_in,
+                       "rn": n, "re": e, "d": desc_in})
+
             st.cache_data.clear()
             st.rerun()
 
 @st.dialog("✏️ Modify Defect")
-def edit_defect_dialog(rec):
+def edit_defect_dialog(record: dict):
     with st.form("edit_form"):
-        title = st.text_input("Summary", rec["defect_title"])
-        status = st.selectbox("Status", STATUSES, index=STATUSES.index(rec["status"]))
-        priority = st.selectbox("Priority", PRIORITIES, index=PRIORITIES.index(rec["priority"]))
-        agent = st.selectbox("Assigned To", AGENTS, index=AGENTS.index(rec["assigned_to"]))
-        desc = st.text_area("Description", rec["description"])
-        comm = st.text_area("Comments", rec["comments"])
+        st.markdown(f"### 📑 Record ID: {record.get('id','')}")
+        new_title = st.text_input("Summary", value=str(record.get("defect_title", "")))
 
-        c1, c2 = st.columns(2)
-        save = c1.form_submit_button("💾 Save")
-        cancel = c2.form_submit_button("✖ Cancel")
+        c1, c2, c3 = st.columns(3)
+        old_status = str(record.get("status", "New"))
+        old_priority = str(record.get("priority", PRIORITIES[0]))
+        old_agent = str(record.get("assigned_to", "Unassigned"))
 
-        if cancel:
+        new_status = c1.selectbox("Status", STATUSES, index=STATUSES.index(old_status) if old_status in STATUSES else 0)
+        new_pri = c2.selectbox("Priority", PRIORITIES, index=PRIORITIES.index(old_priority) if old_priority in PRIORITIES else 0)
+        new_assign = c3.selectbox("Assigned To Agent", AGENTS, index=AGENTS.index(old_agent) if old_agent in AGENTS else 0)
+
+        st.write("---")
+        new_desc = st.text_area("Description", value=str(record.get("description", "")))
+        new_comm = st.text_area("Comments", value=str(record.get("comments", "")))
+
+        col_s, col_c = st.columns(2)
+        save_clicked = col_s.form_submit_button("💾 Save Changes", use_container_width=True, key="save_btn")
+        cancel_clicked = col_c.form_submit_button("✖️ Cancel", use_container_width=True, key="cancel_btn")
+
+        if cancel_clicked:
             st.session_state.editing_id = None
             st.rerun()
 
-        if save:
-            with get_engine().begin() as conn:
-                conn.execute(text("""
-                    UPDATE public.defects SET
-                    defect_title=:t,status=:s,priority=:p,
-                    assigned_to=:a,description=:d,comments=:c,
-                    updated_at=NOW()
-                    WHERE id=:id
-                """), dict(
-                    t=title, s=status, p=priority,
-                    a=agent, d=desc, c=comm,
-                    id=int(rec["id"])
-                ))
-            st.cache_data.clear()
-            st.session_state.editing_id = None
-            st.rerun()
+        if save_clicked:
+            try:
+                rec_id_str = str(record.get("id", "")).strip()
+                rec_id_int = int(float(rec_id_str))  # handles "12" or "12.0"
+
+                with get_engine().begin() as conn:
+                    conn.execute(text("""
+                        UPDATE public.defects SET
+                            defect_title=:t,
+                            status=:s,
+                            priority=:p,
+                            assigned_to=:a,
+                            description=:d,
+                            comments=:c,
+                            updated_at=NOW()
+                        WHERE id=:id
+                    """), {"t": new_title, "s": new_status, "p": new_pri, "a": new_assign,
+                           "d": new_desc, "c": new_comm, "id": rec_id_int})
+
+                st.toast(f"✅ Record {rec_id_str} Updated!", icon="🛡️")
+                st.cache_data.clear()
+                st.session_state.editing_id = None
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Save Failed: {e}")
 
 # ==========================================
-# 8. MAIN UI
+# 6. MAIN UI
 # ==========================================
 df = load_data()
 st.title(f"🛡️ {APP_NAME}")
 
-tab1, tab2 = st.tabs(["📂 Defect Tracker", "📊 Insights"])
+if not df.empty:
+    k1, k2, k3 = st.columns(3)
+    k1.markdown(f'<div class="metric-card global-bucket"><h3>Global Items</h3><h1>{len(df)}</h1></div>', unsafe_allow_html=True)
+    k2.markdown(f'<div class="metric-card open-bucket"><h3>Active</h3><h1>{len(df[~df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
+    k3.markdown(f'<div class="metric-card resolved-bucket"><h3>Resolved Total</h3><h1>{len(df[df["status"].isin(["Resolved", "Closed"])])}</h1></div>', unsafe_allow_html=True)
+else:
+    st.info("Database is empty. Add a new defect to begin.")
 
-with tab1:
+st.divider()
+
+tab_tracker, tab_insights = st.tabs(["📂 Defect Tracker", "📊 Performance Insights"])
+
+with tab_tracker:
+    st.subheader("Action Registry")
+    st.info("💡 **Instructions:** Click any row below to modify the record or assign an agent.")
+
     if st.button("➕ ADD NEW DEFECT"):
         create_defect_dialog()
 
-    search = st.text_input("🔍 Search")
-    disp_df = fast_search(df, search)
+    # ✅ Submit-only search: no rerun/filter while typing
+    st.markdown('<div class="search-wrap">', unsafe_allow_html=True)
+    with st.form("search_form", clear_on_submit=False):
+        c1, c2 = st.columns([4, 1])
+        typed = c1.text_input(
+            "🔍 Quick Filter",
+            value=st.session_state.applied_search,
+            placeholder="Type to search… then press Search (no auto-filter while typing)",
+            label_visibility="visible",
+        )
+        do_search = c2.form_submit_button("Search", use_container_width=True)
+        clear = st.form_submit_button("Clear Search", use_container_width=True)
+
+        if do_search:
+            st.session_state.applied_search = typed
+        if clear:
+            st.session_state.applied_search = ""
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    disp_df = fast_search(df, st.session_state.applied_search)
 
     if not disp_df.empty:
+        # ✅ Ensure Status is included and visible
+        table_cols = [c for c in DISPLAY_COLS if c in disp_df.columns]
+
         event = st.dataframe(
-            disp_df[DISPLAY_COLS],
-            hide_index=True,
+            disp_df[table_cols],
             use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
             selection_mode="single-row",
-            on_select="rerun"
+            column_config={
+                "id": st.column_config.TextColumn("ID"),
+                "defect_title": st.column_config.TextColumn("Summary"),
+                "status": st.column_config.TextColumn("Status"),
+            }
         )
 
-        if event and event.selection.rows:
-            row = event.selection.rows[0]
-            st.session_state.editing_id = disp_df.iloc[row]["id"]
+        if event and getattr(event, "selection", None) and event.selection.rows:
+            selected_row = event.selection.rows[0]
+            selected_id = disp_df.iloc[selected_row]["id"]
+            st.session_state.editing_id = selected_id
             st.rerun()
+    else:
+        st.warning("No matching records found.")
 
-    if st.session_state.editing_id:
+    # Stable dialog open
+    if st.session_state.editing_id and not df.empty:
         rec = df[df["id"] == st.session_state.editing_id]
         if not rec.empty:
             edit_defect_dialog(rec.iloc[0].to_dict())
+        else:
+            st.session_state.editing_id = None
 
-with tab2:
+with tab_insights:
+    st.header("📊 Performance Insights")
     if not df.empty:
-        st.subheader("👤 Agent Workload")
-        gdf = df.groupby(["assigned_to", "status"]).size().reset_index(name="Items")
-        fig = px.bar(
-            gdf, x="Items", y="assigned_to",
-            color="status", orientation="h", text_auto=True
+        c1, c2, c3 = st.columns(3)
+        dim_options = {"module": "Module", "priority": "Priority", "status": "Status", "category": "Category", "environment": "Env"}
+        primary_dim = c1.selectbox("1. Analysis Dimension", options=list(dim_options.keys()), format_func=lambda x: dim_options[x])
+        unique_vals = sorted(df[primary_dim].dropna().unique().tolist())
+        selected_val = c2.selectbox(f"2. Filter Specific {dim_options[primary_dim]}", options=["All Data"] + unique_vals)
+        pivot_dim = c3.selectbox("3. Pivot/Compare By", options=[opt for opt in dim_options.keys() if opt != primary_dim], format_func=lambda x: dim_options[x])
+
+        chart_df = df if selected_val == "All Data" else df[df[primary_dim] == selected_val]
+        st.divider()
+
+        g1, g2 = st.columns(2)
+        fig_bar = px.bar(chart_df.groupby(pivot_dim).size().reset_index(name='Count'),
+                         x=pivot_dim, y='Count', color=pivot_dim,
+                         title=f"Volume by {dim_options[pivot_dim]}")
+        g1.plotly_chart(fig_bar, use_container_width=True)
+
+        fig_pie = px.pie(chart_df, names=pivot_dim, hole=0.5,
+                         title=f"% Distribution of {dim_options[pivot_dim]}")
+        g2.plotly_chart(fig_pie, use_container_width=True)
+
+        st.subheader("👤 Agent Workload by Status")
+        agent_status_df = df.groupby(['assigned_to', 'status']).size().reset_index(name='Items')
+
+        fig_agent = px.bar(
+            agent_status_df,
+            x='Items',
+            y='assigned_to',
+            color='status',
+            orientation='h',
+            text_auto=True,
+            title="Workload Distribution & Progress Status",
+            color_discrete_map={
+                "New": "#3498db", "In Progress": "#f39c12", "Blocked": "#e74c3c",
+                "Resolved": "#2ecc71", "Closed": "#95a5a6", "Reopened": "#9b59b6"
+            }
         )
-        fig.update_layout(barmode="stack", legend_title_text="Status Legend")
-        st.plotly_chart(fig, use_container_width=True)
+        fig_agent.update_layout(barmode='stack', legend_title_text='Status Legend')
+        st.plotly_chart(fig_agent, use_container_width=True)
+    else:
+        st.warning("No data for insights.")
