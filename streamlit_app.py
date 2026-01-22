@@ -356,7 +356,7 @@ with tab_insights:
             text_auto=True,
             title="Workload Distribution & Progress Status",
         )
-        fig_agent.update_layout(barmode="stack', legend_title_text="Status Legend")
+       fig_agent.update_layout(barmode="stack", legend_title_text="Status Legend")
         st.plotly_chart(fig_agent, use_container_width=True)
     else:
         st.warning("No data for insights.")
